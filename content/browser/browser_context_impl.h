@@ -67,6 +67,12 @@ class CONTENT_EXPORT BrowserContextImpl {
   StoragePartitionImplMap* storage_partition_map() {
     return storage_partition_map_.get();
   }
+  void SealStoragePartitionCreationForShutdown() {
+    storage_partition_creation_sealed_for_shutdown_ = true;
+  }
+  bool IsStoragePartitionCreationSealedForShutdown() const {
+    return storage_partition_creation_sealed_for_shutdown_;
+  }
 
   SharedCorsOriginAccessList* shared_cors_origin_access_list() {
     return shared_cors_origin_access_list_.get();
@@ -145,6 +151,7 @@ class CONTENT_EXPORT BrowserContextImpl {
   const base::UnguessableToken unique_token_ = base::UnguessableToken::Create();
   const std::string unique_id_ = unique_token_.ToString();
   bool will_be_destroyed_soon_ = false;
+  bool storage_partition_creation_sealed_for_shutdown_ = false;
 
   std::unique_ptr<StoragePartitionImplMap> storage_partition_map_;
   scoped_refptr<SharedCorsOriginAccessList> shared_cors_origin_access_list_ =

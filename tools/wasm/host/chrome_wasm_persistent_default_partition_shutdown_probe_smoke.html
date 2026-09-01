@@ -1,0 +1,31 @@
+<!doctype html>
+<!-- Copyright 2026 The Chromium Authors
+     Use of this source code is governed by a BSD-style license that can be
+     found in the LICENSE file. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chromium Wasm persistent default-partition shutdown probe</title>
+<main id="m7-persistent-default-partition-shutdown-probe-root"
+    data-state="starting">
+  <h1>Chromium Wasm persistent default-partition shutdown probe</h1>
+  <dl id="m7-persistent-default-partition-shutdown-probe-versions"></dl>
+  <canvas id="m7-persistent-default-partition-shutdown-probe-canvas" width="1"
+      height="1" tabindex="0"
+      aria-label="Chromium Wasm structural shutdown-probe canvas"></canvas>
+  <pre id="m7-persistent-default-partition-shutdown-probe-status">starting</pre>
+</main>
+<script type="module">
+  import {runChromeWasmPersistentDefaultPartitionShutdownProbeFromQuery} from
+      "./chrome_wasm_persistent_default_partition_shutdown_probe_smoke.js";
+
+  runChromeWasmPersistentDefaultPartitionShutdownProbeFromQuery().catch(() => {
+    const root = document.querySelector(
+        "#m7-persistent-default-partition-shutdown-probe-root");
+    const status = document.querySelector(
+        "#m7-persistent-default-partition-shutdown-probe-status");
+    if (root instanceof HTMLElement) root.dataset.state = "fail";
+    if (status instanceof HTMLElement) {
+      status.textContent = "persistent default-partition shutdown probe failed";
+    }
+  });
+</script>

@@ -82,6 +82,10 @@
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_persistent_default_partition_policy_probe.h"  // nogncheck
 #endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+// GN's include checker does not evaluate this target-specific definition.
+#include "chrome/browser/wasm/wasm_profile_persistent_default_partition_shutdown_probe.h"  // nogncheck
+#endif
 #include "chrome/browser/wasm/wasm_profile_persistent_prefs_lifetime_participant.h"
 #include "chrome/browser/wasm/wasm_profile_prefs_fence_controller.h"
 #include "chrome/browser/wasm/wasm_session_navigation_journal.h"
@@ -472,7 +476,8 @@ WasmProfile::WasmProfile(
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
   // The M7 caller must have transferred the construction-start admission
   // before the synchronous JsonPrefStore/PrefService read below can begin.
   CHECK(prefs_lifetime_profile_io_participant_);
@@ -681,7 +686,8 @@ bool WasmProfile::StartPrefsShutdownFence(
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
   // A source-selected strict fence is not independently admissible. Its
   // profile-lifetime holder must remain live until this callback reports the
   // bounded write/readback result to the outer storage lifecycle.
@@ -1052,7 +1058,8 @@ void WasmProfile::OnPrefsShutdownFenceComplete(
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
   // The outer M7 admission remains active until the inner controller has
   // observed the strict JsonPrefStore write/readback result. A missing or
   // previously completed participant is an explicit failure, never a clean
@@ -1093,6 +1100,12 @@ bool WasmProfile::ShouldUseInMemoryDefaultStoragePartition() {
   // and exits before any StoragePartition is requested. This changes no normal
   // Chrome path and does not claim that a partition service is safe to persist.
   chrome::RecordWasmPersistentDefaultPartitionPolicyProbePolicyQuery();
+  return false;
+#elif defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // The source-selected structural probe performs exactly one default
+  // partition accessor. It keeps normal Chrome's default partition volatile,
+  // and it always chooses failure retirement after its map-drop observation.
+  chrome::RecordWasmPersistentDefaultPartitionShutdownProbePolicyQuery();
   return false;
 #else
   // Keep the default StoragePartition volatile while this regular profile has

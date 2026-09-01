@@ -91,4 +91,46 @@ TEST(StoragePartitionImplMapTest, WebSQLCleanup) {
   }
 }
 
+TEST(StoragePartitionImplMapTest, BrowserContextStoragePartitionCreationSeal) {
+  BrowserTaskEnvironment task_environment;
+
+  {
+    TestBrowserContext browser_context;
+    const StoragePartitionConfig default_config =
+        StoragePartitionConfig::CreateDefault(&browser_context);
+
+    EXPECT_FALSE(browser_context.HasStoragePartitionMap());
+    browser_context.SealStoragePartitionCreationForShutdown();
+    EXPECT_TRUE(browser_context.IsStoragePartitionCreationSealedForShutdown());
+    EXPECT_EQ(nullptr,
+              browser_context.GetStoragePartition(default_config,
+                                                  /*can_create=*/true));
+    EXPECT_FALSE(browser_context.HasStoragePartitionMap());
+    EXPECT_EQ(0u, browser_context.GetLoadedStoragePartitionCount());
+  }
+
+  {
+    TestBrowserContext browser_context;
+    const StoragePartitionConfig default_config =
+        StoragePartitionConfig::CreateDefault(&browser_context);
+    StoragePartition* const default_partition =
+        browser_context.GetStoragePartition(default_config);
+    ASSERT_NE(nullptr, default_partition);
+
+    browser_context.SealStoragePartitionCreationForShutdown();
+    EXPECT_EQ(default_partition,
+              browser_context.GetStoragePartition(default_config,
+                                                  /*can_create=*/true));
+
+    const StoragePartitionConfig new_config = StoragePartitionConfig::Create(
+        &browser_context, "late-partition", /*partition_name=*/"",
+        /*in_memory=*/true);
+    EXPECT_EQ(nullptr,
+              browser_context.GetStoragePartition(new_config,
+                                                  /*can_create=*/true));
+    EXPECT_TRUE(browser_context.HasStoragePartitionMap());
+    EXPECT_EQ(1u, browser_context.GetLoadedStoragePartitionCount());
+  }
+}
+
 }  // namespace content

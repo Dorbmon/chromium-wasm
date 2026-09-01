@@ -44,6 +44,7 @@
     !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) && \
+    !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
@@ -91,6 +92,11 @@
 // remain absent from normal Chrome and has no StoragePartition owner API.
 #include "chrome/browser/wasm/wasm_profile_persistent_default_partition_policy_probe.h"  // nogncheck
 #endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+// This helper owns the actual default-partition construction/map-drop
+// observation. Its positive markers never authorize clean storage retirement.
+#include "chrome/browser/wasm/wasm_profile_persistent_default_partition_shutdown_probe.h"  // nogncheck
+#endif
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -106,6 +112,7 @@
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -294,6 +301,7 @@ constexpr char kRequiredAssets[][24] = {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -440,6 +448,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -455,6 +464,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -481,6 +491,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -501,6 +512,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -512,11 +524,12 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     return CHROME_RESULT_CODE_MISSING_DATA;
   }
 
-// The policy-only artifact needs a live BrowserContext solely to observe its
-// default StoragePartitionConfig. It must not register Browser keyed-service
-// factories or WebUI configurations, because either can cause real profile
-// service construction before the pure policy observation.
-#if !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+// The policy-only and structural-shutdown artifacts own their exact first
+// default-partition operation. Do not register Browser keyed-service factories
+// or WebUI configurations, because either can create a profile service before
+// the source-selected observation begins.
+#if !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) && \
+    !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
   // Profile's base constructor marks its BrowserContext live. Register the
   // Wasm-owned factory first so its keyed-service lifecycle can be created and
   // shut down with the profile rather than arriving lazily after that point.
@@ -547,7 +560,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   // is created; normal chrome_wasm has neither this route nor that partition.
   chrome::EnsureWasmProfileRendererIndexedDBWebUIConfigRegistered();
 #endif
-#endif  // !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+#endif  // !policy-probe && !structural-shutdown-probe
 
   // BrowserThread::IO and ThreadPool are live at this stage. The profile's
   // explicit I/O runner may therefore be created without racing startup.
@@ -556,6 +569,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -578,6 +592,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -594,6 +609,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -639,11 +655,41 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   return content::RESULT_CODE_NORMAL_EXIT;
 #endif
 
-// The policy-only artifact returns above before Chrome's host, Browser, and
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // This artifact admits exactly one real default StoragePartition after the
+  // V4 Default mount and profile construction. It owns no Browser, WebUI, or
+  // WebContents, and it always retires the backend fail-closed after observing
+  // the synchronous partition-map drop during Profile shutdown.
+  if (!chrome::IsWasmPersistentDefaultPartitionShutdownProbeEnabled()) {
+    chrome::ReportWasmPersistentDefaultPartitionShutdownProbeFailure(
+        chrome::WasmPersistentDefaultPartitionShutdownProbeFailureStage::
+            kArguments);
+    RequestShutdown();
+    return content::RESULT_CODE_NORMAL_EXIT;
+  }
+  auto shutdown_probe_profile_io_hold =
+      chrome::TryAcquireWasmProfileStorageProfileIO();
+  if (!shutdown_probe_profile_io_hold) {
+    chrome::ReportWasmPersistentDefaultPartitionShutdownProbeFailure(
+        chrome::WasmPersistentDefaultPartitionShutdownProbeFailureStage::
+            kAdmission);
+    RequestShutdown();
+    return content::RESULT_CODE_NORMAL_EXIT;
+  }
+  if (!chrome::RunWasmPersistentDefaultPartitionShutdownProbe(
+          profile_.get(), std::move(*shutdown_probe_profile_io_hold))) {
+    LOG(ERROR) << "chrome_wasm persistent default StoragePartition structural "
+                  "shutdown probe failed";
+  }
+  RequestShutdown();
+  return content::RESULT_CODE_NORMAL_EXIT;
+#endif
+
+// Both dedicated artifacts return above before Chrome's host, Browser, and
 // WebContents setup. Exclude the ordinary remainder at source selection time
-// as well, both to preserve that boundary and to avoid compiling unreachable
-// host initialization under the dedicated probe configuration.
-#if !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+// as well, preserving their exact first-partition boundary.
+#if !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) && \
+    !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -1262,7 +1308,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   std::fprintf(stderr, "%s\n", kWasmNormalBrowserReadyMarker);
   std::fflush(stderr);
   return content::RESULT_CODE_NORMAL_EXIT;
-#endif  // !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+#endif  // !policy-probe && !structural-shutdown-probe
 }
 
 void WasmBrowserMainParts::WillRunMainMessageLoop(
@@ -2351,7 +2397,26 @@ void WasmBrowserMainParts::FinishShutdown() {
     // profile's keyed services down first, then keep the UI loop alive until
     // the JsonPrefStore has committed and strictly read back Preferences on
     // its file sequence. Do not use a nested RunLoop or block this sequence.
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+    // Seal the real BrowserContext map before any shutdown notification can
+    // run a late partition accessor. The structural probe retains its explicit
+    // admission from construction through the later synchronous map-drop
+    // boundary. A later re-entry sees the already-pending/completed fence and
+    // does not duplicate either one-shot observation.
+    if (!profile_->IsPrefsShutdownFencePending() &&
+        !profile_->HasPrefsShutdownFenceCompleted()) {
+      chrome::NotifyWasmPersistentDefaultPartitionShutdownProbeCreationSealed(
+          profile_.get());
+    }
+#endif
     profile_->Shutdown();
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+    if (!profile_->IsPrefsShutdownFencePending() &&
+        !profile_->HasPrefsShutdownFenceCompleted()) {
+      chrome::NotifyWasmPersistentDefaultPartitionShutdownProbeMapDropped(
+          profile_.get());
+    }
+#endif
     if (!profile_->HasPrefsShutdownFenceCompleted()) {
       if (!profile_->IsPrefsShutdownFencePending()) {
         profile_->BeginPrefsShutdownFence(base::BindOnce(
@@ -2380,6 +2445,10 @@ void WasmBrowserMainParts::FinishShutdown() {
 #endif
 #if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
                 chrome::NotifyWasmPersistentDefaultPartitionPolicyProbePrefsFenceResult(
+                    false);
+#endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+                chrome::NotifyWasmPersistentDefaultPartitionShutdownProbePrefsFenceResult(
                     false);
 #endif
                 return;
@@ -2429,6 +2498,7 @@ void WasmBrowserMainParts::FinishShutdown() {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -2452,6 +2522,12 @@ void WasmBrowserMainParts::FinishShutdown() {
     chrome::NotifyWasmPersistentDefaultPartitionPolicyProbePrefsFenceResult(
         prefs_shutdown_fence_succeeded);
 #endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+    chrome::NotifyWasmPersistentDefaultPartitionShutdownProbePrefsFenceResult(
+        prefs_shutdown_fence_succeeded);
+    const bool shutdown_probe_can_use_failure_retirement =
+        chrome::CanWasmPersistentDefaultPartitionShutdownProbeUseFailureRetirement();
+#endif
     profile_.reset();
 #if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
     // Profile destruction can still run source-selected keyed-service teardown.
@@ -2463,14 +2539,30 @@ void WasmBrowserMainParts::FinishShutdown() {
         policy_probe_can_clean_shutdown
             ? chrome::NotifyWasmProfileStorageProfileShutdown()
             : chrome::NotifyWasmProfileStorageProfileShutdownFailClosed();
+#elif defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+    // Dropping BrowserContext's map is not a whole-StoragePartition close
+    // receipt. Preserve the V4 lease until such receipts exist rather than
+    // turning this structural observation into a clean persistence handoff.
+    const bool profile_shutdown_notified =
+        chrome::NotifyWasmProfileStorageProfileShutdownFailClosed();
 #else
     const bool profile_shutdown_notified =
         chrome::NotifyWasmProfileStorageProfileShutdown();
 #endif
-    bool smoke_allows_storage_lifecycle =
+    [[maybe_unused]] bool smoke_allows_storage_lifecycle =
         prefs_shutdown_fence_succeeded && profile_shutdown_notified;
 #if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
     smoke_allows_storage_lifecycle &= policy_probe_can_clean_shutdown;
+#endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+    // No amount of local success authorizes clean lifecycle reporting for a
+    // map-only observation. ChromeMain will validate the exact sealed,
+    // lease-retained failure-retirement receipt instead.
+    smoke_allows_storage_lifecycle = false;
+    if (!shutdown_probe_can_use_failure_retirement) {
+      LOG(ERROR) << "chrome_wasm persistent default StoragePartition shutdown "
+                    "probe did not reach its map-drop/fence boundary";
+    }
 #endif
     if (!prefs_shutdown_fence_succeeded) {
       // The failed preference holder is now visible to the outer failure
@@ -2673,6 +2765,13 @@ void WasmBrowserMainParts::ShutdownFoundation() {
       profile_->QuarantineIndexedDBSmokeForFailureShutdown();
     }
 #endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+    // The normal FinishShutdown() path completes this retained admission only
+    // after observing the map drop. With no UI loop left, make the probe's
+    // admission terminal-failed before profile destruction selects the same
+    // mandatory V4 fail-closed retirement path.
+    chrome::FailWasmPersistentDefaultPartitionShutdownProbe();
+#endif
     profile_->Shutdown();
     // A normal FinishShutdown() releases the profile before it quits the UI
     // loop. Reaching this fallback means startup or the write/readback fence
@@ -2682,6 +2781,7 @@ void WasmBrowserMainParts::ShutdownFoundation() {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \

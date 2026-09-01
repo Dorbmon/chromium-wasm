@@ -56,6 +56,12 @@ declare_args() {
   # or persistent browser service, and is not a persistence acceptance.
   enable_chromium_wasm_m7_persistent_default_partition_policy_probe = false
 
+  # Selects a source-only M7 structural shutdown probe for Chromium's default
+  # StoragePartition. It constructs the real persistent default partition and
+  # observes only synchronous map destruction; the artifact always retires its
+  # V4 OPFS lease fail-closed and is not a persistence acceptance.
+  enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe = false
+
   # Linear-memory bounds shared by the Emscripten link and Chromium's M3
   # in-process memory-budget policy.
   chromium_wasm_initial_memory_bytes = 67108864
@@ -100,4 +106,7 @@ if (current_toolchain == default_toolchain) {
   assert(!enable_chromium_wasm_m7_persistent_default_partition_policy_probe ||
              (is_wasm && enable_chromium_wasm_chrome),
          "M7 persistent-default-partition policy probe requires Wasm Chrome")
+  assert(!enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe ||
+             (is_wasm && enable_chromium_wasm_chrome),
+         "M7 persistent-default-partition shutdown probe requires Wasm Chrome")
 }

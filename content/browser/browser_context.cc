@@ -143,9 +143,18 @@ StoragePartition* BrowserContext::GetStoragePartition(
 StoragePartition* BrowserContext::GetStoragePartition(
     const StoragePartitionConfig& storage_partition_config,
     bool can_create) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
   if (IsOffTheRecord()) {
     // An off the record profile MUST only use in memory storage partitions.
     CHECK(storage_partition_config.in_memory());
+  }
+
+  if (impl()->IsStoragePartitionCreationSealedForShutdown()) {
+    StoragePartitionImplMap* partition_map = impl()->storage_partition_map();
+    return partition_map
+               ? partition_map->Get(storage_partition_config,
+                                    /*can_create=*/false)
+               : nullptr;
   }
 
   return impl()->GetOrCreateStoragePartitionMap()->Get(storage_partition_config,
@@ -173,6 +182,21 @@ void BrowserContext::ForEachLoadedStoragePartition(
 size_t BrowserContext::GetLoadedStoragePartitionCount() {
   StoragePartitionImplMap* partition_map = impl()->storage_partition_map();
   return partition_map ? partition_map->size() : 0;
+}
+
+bool BrowserContext::HasStoragePartitionMap() {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  return impl()->storage_partition_map() != nullptr;
+}
+
+void BrowserContext::SealStoragePartitionCreationForShutdown() {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  impl()->SealStoragePartitionCreationForShutdown();
+}
+
+bool BrowserContext::IsStoragePartitionCreationSealedForShutdown() {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  return impl()->IsStoragePartitionCreationSealedForShutdown();
 }
 
 void BrowserContext::AsyncObliterateStoragePartition(

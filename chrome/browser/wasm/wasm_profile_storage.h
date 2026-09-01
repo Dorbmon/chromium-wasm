@@ -24,7 +24,8 @@ bool InitializeWasmProfileStorage();
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
 // Mounts one dedicated Default-profile acceptance's leased V4 OPFS backend
 // only at /profile/Default. Its /profile parent remains on WasmFS's default
 // memory backend, which the initializer validates before and after the child

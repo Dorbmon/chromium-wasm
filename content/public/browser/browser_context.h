@@ -188,6 +188,20 @@ class CONTENT_EXPORT BrowserContext : public base::SupportsUserData {
   // StoragePartitions.
   size_t GetLoadedStoragePartitionCount();
 
+  // Returns whether this BrowserContext currently owns its partition map. This
+  // is an observation only and does not create the map or a partition.
+  bool HasStoragePartitionMap();
+
+  // One-way shutdown barrier for lazy partition creation through
+  // GetStoragePartition(). Existing loaded partitions remain retrievable, but
+  // future calls through that accessor cannot create a StoragePartition or its
+  // map. This does not change explicit map-maintenance APIs.
+  //
+  // This is a terminal shutdown transition. Once the map has been released,
+  // callers must not continue to require the default partition.
+  void SealStoragePartitionCreationForShutdown();
+  bool IsStoragePartitionCreationSealedForShutdown();
+
   // Starts an asynchronous best-effort attempt to delete all on-disk storage
   // related to |partition_domain| and synchronously invokes |done_callback|
   // once all deletable on-disk storage is deleted. |on_gc_required| will be
@@ -207,6 +221,9 @@ class CONTENT_EXPORT BrowserContext : public base::SupportsUserData {
       std::unordered_set<base::FilePath> active_paths,
       base::OnceClosure done);
 
+  // Returns the default StoragePartition. After a terminal shutdown transition
+  // has sealed creation and released the partition map, this can return
+  // nullptr.
   StoragePartition* GetDefaultStoragePartition();
 
   // Returns the main URLLoaderFactory.

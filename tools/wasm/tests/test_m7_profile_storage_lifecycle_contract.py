@@ -42,6 +42,7 @@ _M7_STORAGE_MACROS = (
     "CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST",
     "CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST",
     "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE",
+    "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE",
 )
 _M7_STORAGE_GN_FLAGS = (
     "enable_chromium_wasm_m7_profile_preferences_test",
@@ -54,6 +55,7 @@ _M7_STORAGE_GN_FLAGS = (
     "local_storage_test",
     "enable_chromium_wasm_m7_profile_indexed_db_test",
     "enable_chromium_wasm_m7_persistent_default_partition_policy_probe",
+    "enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe",
 )
 
 
@@ -203,7 +205,33 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "chrome/browser/wasm/"
             "wasm_profile_persistent_default_partition_policy_probe.gni"
         )
+        self.shutdown_probe = source(
+            "chrome/browser/wasm/"
+            "wasm_profile_persistent_default_partition_shutdown_probe.cc"
+        )
+        self.shutdown_probe_header = source(
+            "chrome/browser/wasm/"
+            "wasm_profile_persistent_default_partition_shutdown_probe.h"
+        )
+        self.shutdown_probe_unit = source(
+            "chrome/browser/wasm/"
+            "wasm_profile_persistent_default_partition_shutdown_probe_unittest.cc"
+        )
+        self.shutdown_probe_gni = source(
+            "chrome/browser/wasm/"
+            "wasm_profile_persistent_default_partition_shutdown_probe.gni"
+        )
         self.wasm_gni = source("build/config/wasm.gni")
+        self.browser_context_header = source(
+            "content/public/browser/browser_context.h"
+        )
+        self.browser_context = source("content/browser/browser_context.cc")
+        self.browser_context_impl = source(
+            "content/browser/browser_context_impl.h"
+        )
+        self.storage_partition_map_unit = source(
+            "content/browser/storage_partition_impl_map_unittest.cc"
+        )
 
     def test_runtime_storage_consumers_are_m7_config_gated(self) -> None:
         for text, tokens in (
@@ -296,7 +324,8 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \\\n"
             "    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \\\n"
             "    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \\\n"
-            "    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)\n"
+            "    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \\\n"
+            "    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)\n"
             "// Mounts one dedicated Default-profile acceptance's leased V4 OPFS backend",
             self.storage_header,
         )
@@ -316,6 +345,8 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "#elif defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)\n"
             "    } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {\n"
             "#elif defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)\n"
+            "    } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {\n"
+            "#elif defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)\n"
             "    } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {\n"
             "#else\n"
             "    } else if (!chrome::InitializeWasmProfileStorage()) {\n"
@@ -1091,7 +1122,8 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.assertIn("RequestShutdown();", policy_branch_text)
         self.assertNotIn("GetDefaultStoragePartition(", policy_branch_text)
         ordinary_pre_main_remainder = (
-            "#if !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)\n"
+            "#if !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) && \\\n"
+            "    !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)\n"
             "#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)"
         )
         self.assertIn(ordinary_pre_main_remainder, pre_main)
@@ -1099,18 +1131,15 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             policy_branch,
             pre_main.index(ordinary_pre_main_remainder),
         )
-        self.assertIn(
-            "#endif  // !defined("
-            "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)",
-            pre_main,
-        )
+        self.assertIn("#endif  // !policy-probe && !structural-shutdown-probe", pre_main)
         pre_profile_browser_setup = pre_main[
             pre_main.index(
-                "// The policy-only artifact needs a live BrowserContext solely"
+                "// The policy-only and structural-shutdown artifacts own their exact first"
             ) : pre_main.index("// BrowserThread::IO and ThreadPool are live")
         ]
         self.assertIn(
-            "#if !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)",
+            "#if !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) && \\\n"
+            "    !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)",
             pre_profile_browser_setup,
         )
         self.assertIn(
@@ -1122,7 +1151,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             pre_profile_browser_setup,
         )
         self.assertIn(
-            "#endif  // !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)",
+            "#endif  // !policy-probe && !structural-shutdown-probe",
             pre_profile_browser_setup,
         )
 
@@ -1160,6 +1189,232 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         ):
             with self.subTest(token=token):
                 self.assertIn(token, self.chrome_main)
+
+    def test_persistent_default_partition_shutdown_probe_seals_creation_and_fail_closes(
+        self,
+    ) -> None:
+        for token in (
+            "enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe = false",
+            "M7 persistent-default-partition shutdown probe requires Wasm Chrome",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.wasm_gni)
+
+        for token in (
+            "wasm-chrome-m7-persistent-default-partition-shutdown-probe",
+            "enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe",
+            "enable_chromium_wasm_m7_persistent_default_partition_policy_probe",
+            "M7 persistent-default-partition shutdown probe requires its own fresh",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.shutdown_probe_gni)
+
+        for token in (
+            "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1",
+            'source_set("wasm_profile_persistent_default_partition_shutdown_probe")',
+            'test("wasm_profile_persistent_default_partition_shutdown_probe_unittests")',
+            '":wasm_profile_persistent_default_partition_shutdown_probe",',
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.wasm_browser_build)
+
+        shutdown_run = _body_after_signature(
+            self.shutdown_probe,
+            "  bool Run(content::BrowserContext* browser_context,",
+        )
+        for token in (
+            "profile_io_hold_.emplace(std::move(profile_io_hold));",
+            "browser_context->GetLoadedStoragePartitionCount() != 0u",
+            "browser_context->GetDefaultStoragePartition();",
+            "policy_query_armed_ = true;",
+            "policy_query_count_ != 1",
+            "config->is_default()",
+            "config->in_memory()",
+            "partition->GetPath() == browser_context->GetPath()",
+            'EmitMarker("DEFAULT_PARTITION_CREATED");',
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, shutdown_run)
+        self.assertLess(
+            shutdown_run.index("policy_query_armed_ = true;"),
+            shutdown_run.index("browser_context->GetDefaultStoragePartition();"),
+        )
+        self.assertLess(
+            shutdown_run.index("browser_context->GetDefaultStoragePartition();"),
+            shutdown_run.index("policy_query_armed_ = false;"),
+        )
+        self.assertEqual(1, self.shutdown_probe.count("GetStoragePartition("))
+        self.assertNotIn("Flush(", self.shutdown_probe)
+
+        for token in (
+            "SealStoragePartitionCreationForShutdown();",
+            "IsStoragePartitionCreationSealedForShutdown()",
+            "content::StoragePartitionConfig::Create(",
+            '"wasmshutdownprobe", "late-partition"',
+            "GetStoragePartition(late_partition_config,",
+            "/*can_create=*/true",
+            "browser_context->GetLoadedStoragePartitionCount() != 1u",
+            'EmitMarker("PARTITION_CREATION_SEALED");',
+            'EmitMarker("LATE_PARTITION_CREATION_REJECTED");',
+            "HasStoragePartitionMap()",
+            "IsWasmPersistentDefaultPartitionMapDropped(",
+            'EmitMarker("PARTITION_MAP_DROPPED");',
+            "return !has_partition_map && loaded_partition_count == 0u;",
+            "CanUseFailureRetirement() const",
+            'EmitMarker("FAIL_CLOSED_RETIREMENT");',
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.shutdown_probe)
+        self.assertLess(
+            self.shutdown_probe.index('EmitMarker("PARTITION_CREATION_SEALED");'),
+            self.shutdown_probe.index(
+                "content::StoragePartitionConfig::Create("
+            ),
+        )
+        self.assertLess(
+            self.shutdown_probe.index(
+                "content::StoragePartitionConfig::Create("
+            ),
+            self.shutdown_probe.index(
+                'EmitMarker("LATE_PARTITION_CREATION_REJECTED");'
+            ),
+        )
+        self.assertLess(
+            self.shutdown_probe.index(
+                'EmitMarker("LATE_PARTITION_CREATION_REJECTED");'
+            ),
+            self.shutdown_probe.index('EmitMarker("PARTITION_MAP_DROPPED");'),
+        )
+
+        for token in (
+            "bool HasStoragePartitionMap();",
+            "void SealStoragePartitionCreationForShutdown();",
+            "bool IsStoragePartitionCreationSealedForShutdown();",
+            "This does not change explicit map-maintenance APIs.",
+            "callers must not continue to require the default partition.",
+            "has sealed creation and released the partition map, this can return",
+            "nullptr.",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.browser_context_header)
+        self.assertIn(
+            "remains only an instantaneous map-drop observation.",
+            self.shutdown_probe_header,
+        )
+        for token in (
+            "DCHECK_CURRENTLY_ON(BrowserThread::UI);",
+            "if (impl()->IsStoragePartitionCreationSealedForShutdown())",
+            "impl()->storage_partition_map()",
+            "/*can_create=*/false",
+            "bool BrowserContext::HasStoragePartitionMap()",
+            "void BrowserContext::SealStoragePartitionCreationForShutdown()",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.browser_context)
+        for signature in (
+            "StoragePartition* BrowserContext::GetStoragePartition(\n"
+            "    const StoragePartitionConfig& storage_partition_config,",
+            "bool BrowserContext::HasStoragePartitionMap()",
+            "void BrowserContext::SealStoragePartitionCreationForShutdown()",
+            "bool BrowserContext::IsStoragePartitionCreationSealedForShutdown()",
+        ):
+            with self.subTest(signature=signature):
+                self.assertIn(
+                    "DCHECK_CURRENTLY_ON(BrowserThread::UI);",
+                    _body_after_signature(self.browser_context, signature),
+                )
+        self.assertIn(
+            "bool storage_partition_creation_sealed_for_shutdown_ = false;",
+            self.browser_context_impl,
+        )
+
+        for token in (
+            "BrowserContextStoragePartitionCreationSeal",
+            "SealStoragePartitionCreationForShutdown();",
+            "GetStoragePartition(default_config,",
+            "/*can_create=*/true",
+            '"late-partition"',
+            "GetLoadedStoragePartitionCount()",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.storage_partition_map_unit)
+
+        profile_policy = _body_after_signature(
+            self.profile,
+            "bool WasmProfile::ShouldUseInMemoryDefaultStoragePartition()",
+        )
+        self.assertIn(
+            "RecordWasmPersistentDefaultPartitionShutdownProbePolicyQuery();",
+            profile_policy,
+        )
+        self.assertIn("return false;", profile_policy)
+
+        pre_main = _body_after_signature(
+            self.main_parts, "int WasmBrowserMainParts::PreMainMessageLoopRun()"
+        )
+        shutdown_branch = pre_main.index(
+            "#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)"
+        )
+        self.assertIn(
+            "RunWasmPersistentDefaultPartitionShutdownProbe(",
+            pre_main[shutdown_branch:],
+        )
+        self.assertIn("RequestShutdown();", pre_main[shutdown_branch:])
+
+        finish_shutdown = _body_after_signature(
+            self.main_parts, "void WasmBrowserMainParts::FinishShutdown()"
+        )
+        creation_sealed = finish_shutdown.index(
+            "NotifyWasmPersistentDefaultPartitionShutdownProbeCreationSealed("
+        )
+        profile_shutdown = finish_shutdown.index("profile_->Shutdown();")
+        map_dropped = finish_shutdown.index(
+            "NotifyWasmPersistentDefaultPartitionShutdownProbeMapDropped("
+        )
+        prefs_fence = finish_shutdown.index(
+            "NotifyWasmPersistentDefaultPartitionShutdownProbePrefsFenceResult("
+        )
+        self.assertLess(creation_sealed, profile_shutdown)
+        self.assertLess(profile_shutdown, map_dropped)
+        self.assertLess(map_dropped, prefs_fence)
+        shutdown_retirement_start = finish_shutdown.index(
+            "#elif defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)"
+        )
+        shutdown_retirement = finish_shutdown[
+            shutdown_retirement_start : finish_shutdown.index(
+                "#else", shutdown_retirement_start
+            )
+        ]
+        self.assertIn(
+            "NotifyWasmProfileStorageProfileShutdownFailClosed()",
+            shutdown_retirement,
+        )
+        self.assertNotIn(
+            "NotifyWasmProfileStorageProfileShutdown()",
+            shutdown_retirement,
+        )
+
+        for token in (
+            "persistent_default_partition_shutdown_probe_requested",
+            "persistent_default_partition_shutdown_probe_enabled",
+            "NotifyWasmPersistentDefaultPartitionShutdownProbeFailureRetirement(\n"
+            "        IsWasmM7ProfileFailureRetirement(drain_result));",
+            "DidWasmPersistentDefaultPartitionShutdownProbeComplete()",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.chrome_main)
+        self.assertIn(
+            "wasm-persistent-default-partition-shutdown-probe",
+            self.shutdown_probe,
+        )
+        self.assertLess(
+            self.chrome_main.index(
+                "CHROMIUM_WASM_M7_PROFILE_FAILURE_RETIREMENT:SEALED_LEASE_RETAINED"
+            ),
+            self.chrome_main.index(
+                "NotifyWasmPersistentDefaultPartitionShutdownProbeFailureRetirement("
+            ),
+        )
 
     def test_only_experimental_m7_selects_wasmfs_and_storage(self) -> None:
         chrome_wasm = _body_after_signature(

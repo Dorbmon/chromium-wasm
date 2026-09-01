@@ -18,6 +18,7 @@
     !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) && \
+    !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
@@ -61,11 +62,17 @@
 // protocol; normal chrome_wasm neither links it nor changes its policy.
 #include "chrome/browser/wasm/wasm_profile_persistent_default_partition_policy_probe.h"  // nogncheck
 #endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+// Only the dedicated structural probe owns this switch and its fail-closed
+// marker protocol; normal Chrome neither links it nor changes its policy.
+#include "chrome/browser/wasm/wasm_profile_persistent_default_partition_shutdown_probe.h"  // nogncheck
+#endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -109,6 +116,7 @@ bool IsNormalChromeMainResult(int result) {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -198,6 +206,9 @@ extern "C" int ChromeMain(int argc, const char** argv) {
 #if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
   bool persistent_default_partition_policy_probe_enabled = false;
 #endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  bool persistent_default_partition_shutdown_probe_enabled = false;
+#endif
 #if defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -217,6 +228,7 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) && \
+    !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
@@ -286,6 +298,16 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     if (persistent_default_partition_policy_probe_requested) {
       persistent_default_partition_policy_probe_enabled =
           chrome::EnableWasmPersistentDefaultPartitionPolicyProbe();
+    }
+#endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+    // The one source-selected structural probe accepts only its exact empty
+    // switch before it mounts /profile/Default or creates any Content owner.
+    const bool persistent_default_partition_shutdown_probe_requested =
+        chrome::HasWasmPersistentDefaultPartitionShutdownProbeArguments();
+    if (persistent_default_partition_shutdown_probe_requested) {
+      persistent_default_partition_shutdown_probe_enabled =
+          chrome::EnableWasmPersistentDefaultPartitionShutdownProbe();
     }
 #endif
 
@@ -430,6 +452,7 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -482,6 +505,17 @@ extern "C" int ChromeMain(int argc, const char** argv) {
                 kArguments);
       }
       result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+#elif defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+    if (!persistent_default_partition_shutdown_probe_requested ||
+        !persistent_default_partition_shutdown_probe_enabled) {
+      // The one real-partition artifact must not mount V4 or fall through to
+      // normal Chrome when its exact source-selected protocol is absent.
+      if (!persistent_default_partition_shutdown_probe_requested) {
+        chrome::ReportWasmPersistentDefaultPartitionShutdownProbeFailure(
+            chrome::WasmPersistentDefaultPartitionShutdownProbeFailureStage::
+                kArguments);
+      }
+      result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
 #endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
@@ -494,6 +528,8 @@ extern "C" int ChromeMain(int argc, const char** argv) {
 #elif defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
     } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {
 #elif defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+    } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {
+#elif defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
     } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {
 #else
     } else if (!chrome::InitializeWasmProfileStorage()) {
@@ -533,6 +569,13 @@ extern "C" int ChromeMain(int argc, const char** argv) {
       if (persistent_default_partition_policy_probe_requested) {
         chrome::ReportWasmPersistentDefaultPartitionPolicyProbeFailure(
             chrome::WasmPersistentDefaultPartitionPolicyProbeFailureStage::
+                kStorage);
+      }
+#endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+      if (persistent_default_partition_shutdown_probe_requested) {
+        chrome::ReportWasmPersistentDefaultPartitionShutdownProbeFailure(
+            chrome::WasmPersistentDefaultPartitionShutdownProbeFailureStage::
                 kStorage);
       }
 #endif
@@ -599,6 +642,14 @@ extern "C" int ChromeMain(int argc, const char** argv) {
             kContent);
   }
 #endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  if (persistent_default_partition_shutdown_probe_enabled &&
+      !IsNormalChromeMainResult(result)) {
+    chrome::ReportWasmPersistentDefaultPartitionShutdownProbeFailure(
+        chrome::WasmPersistentDefaultPartitionShutdownProbeFailureStage::
+            kProfile);
+  }
+#endif
 
   // The dedicated M7 probes seal and drain their exact V4 leased OPFS backend
   // only after ContentMain and its delegate have both returned, when no
@@ -609,6 +660,7 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -675,6 +727,16 @@ extern "C" int ChromeMain(int argc, const char** argv) {
       result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
     }
 #endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+    chrome::NotifyWasmPersistentDefaultPartitionShutdownProbeFailureRetirement(
+        IsWasmM7ProfileFailureRetirement(drain_result));
+    if (!chrome::DidWasmPersistentDefaultPartitionShutdownProbeComplete() &&
+        IsNormalChromeMainResult(result)) {
+      // A structural-probe protocol failure cannot be a normal process result,
+      // even though the forced V4 failure-retirement marker is expected.
+      result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    }
+#endif
     if (!drain_result.Succeeded()) {
       // Before acknowledged Web Locks release, a drain failure has no safe
       // handoff. A post-release worker-retirement failure has already released
@@ -728,6 +790,13 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     if (IsNormalChromeMainResult(result)) {
       result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
     }
+#elif defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  } else if (persistent_default_partition_shutdown_probe_enabled) {
+    chrome::NotifyWasmPersistentDefaultPartitionShutdownProbeFailureRetirement(
+        false);
+    if (IsNormalChromeMainResult(result)) {
+      result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    }
 #endif
   }
 #endif
@@ -737,6 +806,7 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) && \
+    !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
