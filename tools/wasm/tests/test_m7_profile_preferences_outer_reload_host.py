@@ -23,6 +23,9 @@ HOST_URI = HOST_PATH.as_uri()
 def fake_host_script() -> str:
     loader_source = r'''
 export default async function(options) {
+  if (globalThis.__expectNoLoader) {
+    throw new Error("loader invoked");
+  }
   if (!options.arguments.includes(
       "--wasm-profile-preferences-browser-smoke")) {
     throw new Error("Browser smoke capability is missing");
@@ -122,13 +125,26 @@ if (!globalThis.crypto || !globalThis.crypto.subtle) {
 const ordinal = Number(process.argv[1]);
 const scenario = process.argv[2];
 const timeoutMs = process.argv[3];
+const phaseTwoNavigationType = process.argv[4];
+const bootstrapNavigationMode = process.argv[5];
 if ((ordinal !== 1 && ordinal !== 2 && ordinal !== 3) ||
     (scenario !== "pass" && scenario !== "leak") ||
-    !/^(?:2000|300000|300001)$/.test(timeoutMs)) {
+    !/^(?:2000|300000|300001)$/.test(timeoutMs) ||
+    (phaseTwoNavigationType !== "navigate" &&
+     phaseTwoNavigationType !== "reload") ||
+    !["match", "navigate", "reload", "omit", "invalid"].includes(
+        bootstrapNavigationMode)) {
   throw new Error("test input is invalid");
 }
 globalThis.__scenario = scenario;
 globalThis.__ordinal = ordinal;
+const expectedNavigationType = ordinal === 1 ? "navigate" :
+    ordinal === 2 ? phaseTwoNavigationType : "reload";
+const bootstrapExpectedNavigationType =
+    bootstrapNavigationMode === "match" ? expectedNavigationType :
+    bootstrapNavigationMode === "invalid" ? "back_forward" :
+    bootstrapNavigationMode === "omit" ? null : bootstrapNavigationMode;
+globalThis.__expectNoLoader = bootstrapNavigationMode !== "match";
 let tick = 0;
 Object.defineProperty(globalThis, "performance", {
   configurable: true,
@@ -136,7 +152,7 @@ Object.defineProperty(globalThis, "performance", {
     timeOrigin: 1700000000000 + ordinal,
     now() { return ++tick; },
     getEntriesByType(name) {
-      return name === "navigation" ? [{type: ordinal === 1 ? "navigate" : "reload"}] : [];
+      return name === "navigation" ? [{type: expectedNavigationType}] : [];
     },
   },
 });
@@ -235,11 +251,14 @@ function headers(contentType = null) {
 }
 const bootstrap = {
   protocol: 1,
-  case: "chrome_profile_preferences_three_outer_document_reload_m7",
+  case: "chrome_profile_preferences_three_outer_document_persistence_m7",
   scope:
-      "same-origin-three-outer-documents-chrome-wasm-m7-profile-preferences-bookmark-model-cookie-manager-and-history-test-modules-orderly-reload-only",
+      "same-origin-three-outer-documents-chrome-wasm-m7-profile-preferences-bookmark-model-cookie-manager-and-history-test-modules-orderly-handoff-only",
   ordinal,
   mode: ordinal === 1 ? "write" : ordinal === 2 ? "verify-and-write" : "verify-b",
+  ...(bootstrapExpectedNavigationType === null ? {} : {
+    expectedNavigationType: bootstrapExpectedNavigationType,
+  }),
   tokenA: ordinal === 3 ? null : rawA,
   tokenB: ordinal === 1 ? null : rawB,
   tokenADigest: ordinal === 3 ? null : await digest(new TextEncoder().encode(rawA)),
@@ -254,7 +273,7 @@ globalThis.fetch = async (url, options = {}) => {
   if (href.includes("/bootstrap/")) {
     if (options.method === "POST") {
       const evidence = JSON.parse(options.body);
-      const expectedType = ordinal === 1 ? "navigate" : "reload";
+      const expectedType = expectedNavigationType;
       if (JSON.stringify(Object.keys(evidence).sort()) !== JSON.stringify(
           ["case", "navigationType", "protocol", "scope", "timeOrigin"]) ||
           evidence.protocol !== 1 || evidence.case !== bootstrap.case ||
@@ -311,11 +330,17 @@ if (scenario === "pass") {
 
 class M7ProfilePreferencesOuterReloadHostTest(unittest.TestCase):
     def run_fake_host(
-        self, ordinal: int, scenario: str, timeout_ms: str = "2000"
+        self,
+        ordinal: int,
+        scenario: str,
+        timeout_ms: str = "2000",
+        phase_two_navigation_type: str = "reload",
+        bootstrap_navigation_mode: str = "match",
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             ["node", "--input-type=module", "--eval", fake_host_script(),
-             str(ordinal), scenario, timeout_ms],
+             str(ordinal), scenario, timeout_ms, phase_two_navigation_type,
+             bootstrap_navigation_mode],
             check=False,
             capture_output=True,
             text=True,
@@ -331,6 +356,28 @@ class M7ProfilePreferencesOuterReloadHostTest(unittest.TestCase):
         completed = self.run_fake_host(2, "pass")
         self.assertTrue(completed.returncode == 0, "verify fake host failed")
         self.assertEqual(completed.stdout, "pass\n")
+
+    def test_accepts_fresh_outer_browser_verify_and_write_document(self) -> None:
+        completed = self.run_fake_host(
+            2, "pass", phase_two_navigation_type="navigate"
+        )
+        self.assertTrue(
+            completed.returncode == 0,
+            "fresh-outer-browser verify fake host failed",
+        )
+        self.assertEqual(completed.stdout, "pass\n")
+
+    def test_rejects_mismatched_or_invalid_bootstrap_navigation_type(self) -> None:
+        for bootstrap_navigation_mode in ("reload", "omit", "invalid"):
+            with self.subTest(bootstrap_navigation_mode=bootstrap_navigation_mode):
+                completed = self.run_fake_host(
+                    2,
+                    "pass",
+                    phase_two_navigation_type="navigate",
+                    bootstrap_navigation_mode=bootstrap_navigation_mode,
+                )
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertNotIn("loader invoked", completed.stderr)
 
     def test_accepts_verify_b_document(self) -> None:
         completed = self.run_fake_host(3, "pass")

@@ -119,7 +119,11 @@ def passing_quiescence() -> dict[str, object]:
 
 
 def passing_result(
-    ordinal: int, escrow: smoke.TokenEscrow, time_origin: float
+    ordinal: int,
+    escrow: smoke.TokenEscrow,
+    time_origin: float,
+    *,
+    navigation_type: str | None = None,
 ) -> dict[str, object]:
     return {
         "protocol": 1,
@@ -132,7 +136,9 @@ def passing_result(
         "crossOriginIsolated": True,
         "sharedArrayBuffer": True,
         "document": {
-            "navigationType": "navigate" if ordinal == 1 else "reload",
+            "navigationType": navigation_type or (
+                "navigate" if ordinal == 1 else "reload"
+            ),
             "timeOrigin": time_origin,
         },
         "artifact": copy.deepcopy(ARTIFACT_IDENTITY),
@@ -204,7 +210,7 @@ def document_receipt(navigation_type: str, time_origin: float) -> bytes:
 
 
 @contextmanager
-def temporary_server():
+def temporary_server(*, phase_two_navigation_type: str = "reload"):
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         out_dir = root / "out"
@@ -233,6 +239,7 @@ def temporary_server():
             escrow,
             host_dir=host_dir,
             runner_source_path=runner_source,
+            phase_two_navigation_type=phase_two_navigation_type,
         )
         thread = threading.Thread(
             target=server.serve_forever,
@@ -290,7 +297,7 @@ class M7ProfilePreferencesOuterReloadDomSmokeTest(unittest.TestCase):
         self.assertEqual(
             smoke.DEFAULT_OUT_DIR, Path("out/wasm-chrome-m7-profile-preferences")
         )
-        self.assertIn("orderly-reload-only", smoke.SCOPE)
+        self.assertIn("orderly-handoff-only", smoke.SCOPE)
         self.assertIn("bookmark-model", smoke.SCOPE)
         self.assertIn("cookie-manager", smoke.SCOPE)
         self.assertNotIn("recovery", smoke.SCOPE)
@@ -325,6 +332,185 @@ class M7ProfilePreferencesOuterReloadDomSmokeTest(unittest.TestCase):
                     escrow.token_b, escrow.token_b_digest, "token B"
                 )
         smoke.validate_outer_document_transitions(*phases)
+
+    def test_accepts_fresh_outer_browser_phase_two_navigation(self) -> None:
+        with temporary_server(phase_two_navigation_type="navigate") as (server, escrow):
+            session = server.session
+            self.assertTrue(
+                session.accept_document(
+                    SESSION_CAPABILITY, smoke.DocumentEvidence("navigate", 100.0)
+                )
+            )
+            session.acknowledge_document(SESSION_CAPABILITY)
+            self.assertEqual(
+                session.bootstrap_payload(SESSION_CAPABILITY)["expectedNavigationType"],
+                "navigate",
+            )
+            self.assertTrue(session.accept_result(RESULT_CAPABILITY, 1))
+            self.assertTrue(session.accept_ready(RESULT_CAPABILITY, 1))
+            session.arm_phase_two(100.0)
+            self.assertTrue(
+                session.observe_top_level_root_navigation(
+                    RESULT_CAPABILITY,
+                    SESSION_CAPABILITY,
+                    "document",
+                    "navigate",
+                )
+            )
+            self.assertTrue(
+                session.accept_document(
+                    SESSION_CAPABILITY, smoke.DocumentEvidence("navigate", 101.0)
+                )
+            )
+            session.acknowledge_document(SESSION_CAPABILITY)
+            bootstrap = session.bootstrap_payload(SESSION_CAPABILITY)
+            self.assertEqual(bootstrap["ordinal"], 2)
+            self.assertEqual(bootstrap["expectedNavigationType"], "navigate")
+
+            result = passing_result(
+                2, escrow, 101.0, navigation_type="navigate"
+            )
+            phase = smoke.validate_phase_result(
+                result,
+                ordinal=2,
+                expected_versions=VERSIONS,
+                expected_artifact_identity=ARTIFACT_IDENTITY,
+                expected_capture_harness_identity=CAPTURE_HARNESS_IDENTITY,
+                expected_origin=ORIGIN,
+                expected_document=smoke.DocumentEvidence("navigate", 101.0),
+                escrow=escrow,
+                result_token=RESULT_CAPABILITY,
+                session=SESSION_CAPABILITY,
+            )
+            self.assertEqual(phase.navigation_type, "navigate")
+            smoke.validate_outer_document_transitions(
+                smoke.PhaseResult(1, ORIGIN, "navigate", 100.0, "1" * 32),
+                phase,
+                smoke.PhaseResult(3, ORIGIN, "reload", 102.0, "3" * 32),
+                phase_two_navigation_type="navigate",
+            )
+
+    def test_fresh_outer_browser_mode_rejects_reload_phase_two_evidence(self) -> None:
+        with temporary_server(phase_two_navigation_type="navigate") as (server, _escrow):
+            session = server.session
+            self.assertTrue(
+                session.accept_document(
+                    SESSION_CAPABILITY, smoke.DocumentEvidence("navigate", 100.0)
+                )
+            )
+            session.acknowledge_document(SESSION_CAPABILITY)
+            self.assertIsNotNone(session.bootstrap_payload(SESSION_CAPABILITY))
+            self.assertTrue(session.accept_result(RESULT_CAPABILITY, 1))
+            self.assertTrue(session.accept_ready(RESULT_CAPABILITY, 1))
+            session.arm_phase_two(100.0)
+
+            root = urlsplit(
+                smoke.smoke_url(
+                    server,
+                    RESULT_CAPABILITY,
+                    SESSION_CAPABILITY,
+                    VERSIONS,
+                    artifact=smoke.artifact_identity(server),
+                    capture_harness=smoke.capture_harness_identity(server),
+                    timeout_seconds=30.0,
+                )
+            )
+            root_path = f"{root.path}?{root.query}"
+            status, _headers, _body = request(
+                server,
+                "GET",
+                root_path,
+                headers={
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                },
+            )
+            self.assertEqual(status, 200)
+            bootstrap_path = f"{smoke.HOST_ROOT}/bootstrap/{SESSION_CAPABILITY}"
+            status, _headers, _body = request(
+                server,
+                "POST",
+                bootstrap_path,
+                document_receipt("reload", 101.0),
+            )
+            self.assertEqual(status, 409)
+            status, _headers, _body = request(
+                server,
+                "POST",
+                bootstrap_path,
+                document_receipt("navigate", 101.0),
+            )
+            self.assertEqual(status, 204)
+            status, _headers, body = request(server, "GET", bootstrap_path)
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                json.loads(body)["expectedNavigationType"], "navigate"
+            )
+
+    def test_rejects_invalid_or_mismatched_phase_two_navigation_contract(self) -> None:
+        escrow = smoke.new_token_escrow()
+        with self.assertRaises(M0Error):
+            smoke.OuterReloadSession(
+                RESULT_CAPABILITY,
+                SESSION_CAPABILITY,
+                escrow,
+                phase_two_navigation_type="back_forward",
+            )
+        with self.assertRaises(M0Error):
+            smoke.validate_outer_document_transitions(
+                smoke.PhaseResult(1, ORIGIN, "navigate", 100.0, "1" * 32),
+                smoke.PhaseResult(2, ORIGIN, "reload", 101.0, "2" * 32),
+                smoke.PhaseResult(3, ORIGIN, "reload", 102.0, "3" * 32),
+                phase_two_navigation_type="navigate",
+            )
+
+    def test_fresh_outer_browser_persistence_claim_requires_every_evidence_edge(
+        self,
+    ) -> None:
+        complete = {
+            "outer_browser_processes_started": 2,
+            "first_outer_browser_close": smoke.OuterBrowserCloseEvidence(
+                True, True, True, True
+            ),
+            "second_outer_browser_identity_distinct": True,
+            "same_outer_profile_for_phase_two": True,
+            "same_origin_for_phase_two": True,
+            "phase_two_navigation_type": "navigate",
+            "phase_two": smoke.PhaseResult(
+                2, ORIGIN, "navigate", 101.0, "2" * 32
+            ),
+            "phase_two_read_a_validated": True,
+            "phase_two_fresh_document_time_origin": True,
+        }
+        self.assertTrue(
+            smoke.has_fresh_outer_browser_preferences_persistence_evidence(
+                **complete
+            )
+        )
+        incomplete_cases = {
+            "one-process": {"outer_browser_processes_started": 1},
+            "no-close": {"first_outer_browser_close": None},
+            "same-pid": {"second_outer_browser_identity_distinct": False},
+            "different-profile": {"same_outer_profile_for_phase_two": False},
+            "different-origin": {"same_origin_for_phase_two": False},
+            "reload-contract": {"phase_two_navigation_type": "reload"},
+            "reload-document": {
+                "phase_two": smoke.PhaseResult(
+                    2, ORIGIN, "reload", 101.0, "2" * 32
+                )
+            },
+            "no-read-a": {"phase_two_read_a_validated": False},
+            "no-fresh-time-origin": {"phase_two_fresh_document_time_origin": False},
+        }
+        for label, replacement in incomplete_cases.items():
+            with self.subTest(label=label):
+                candidate = dict(complete)
+                candidate.update(replacement)
+                self.assertFalse(
+                    smoke.has_fresh_outer_browser_preferences_persistence_evidence(
+                        **candidate
+                    )
+                )
 
     def test_rejects_missing_or_reordered_browser_close_marker(self) -> None:
         escrow = smoke.new_token_escrow()
@@ -932,6 +1118,102 @@ class M7ProfilePreferencesOuterReloadDomSmokeTest(unittest.TestCase):
             list(captured),
             ["ordinary browser line", smoke.SUPPRESSED_BROWSER_STDERR_TOKEN],
         )
+
+    def test_browser_stderr_reader_redacts_before_retaining_a_raw_token(self) -> None:
+        escrow = smoke.new_token_escrow()
+        captured: deque[str] = deque()
+        raw_token_seen = threading.Event()
+        reader = smoke.BrowserStderrReader(
+            io.StringIO(f"ordinary browser line\n{escrow.token_a}\n"),
+            captured,
+            name="m7-profile-preferences-token-hygiene",
+            transform_record=lambda record: smoke.redact_browser_stderr_record(
+                record, escrow, raw_token_seen
+            ),
+        )
+
+        reader.start()
+        reader.join(timeout=1)
+
+        self.assertTrue(raw_token_seen.is_set())
+        self.assertTrue(reader.reached_eof)
+        self.assertIsNone(reader.error)
+        self.assertNotIn(escrow.token_a, captured)
+        self.assertNotIn(escrow.token_b, captured)
+        self.assertEqual(
+            list(captured),
+            ["ordinary browser line", smoke.SUPPRESSED_BROWSER_STDERR_TOKEN],
+        )
+
+    def test_clean_outer_browser_close_requires_cdp_ack_and_quiescence(self) -> None:
+        browser = mock.Mock()
+        browser.poll.return_value = None
+        browser.returncode = 0
+        reader = mock.Mock()
+        reader.reached_eof = True
+        launch = smoke.OuterBrowserLaunch(
+            browser=browser,
+            debug_port=43128,
+            profile_path="/tmp/profile",
+            url="http://127.0.0.1:43127/",
+            stderr_reader=reader,
+        )
+        page_client = mock.Mock()
+        browser_client = mock.Mock()
+        browser_client.call.return_value = {}
+        with (
+            mock.patch.object(
+                smoke, "wait_for_browser_client", return_value=browser_client
+            ) as wait_for_client,
+            mock.patch.object(smoke, "wait_for_browser_group_exit") as wait_for_exit,
+        ):
+            evidence = smoke.close_outer_browser_cleanly(
+                launch, page_client, time.monotonic() + 1
+            )
+
+        self.assertEqual(
+            evidence,
+            smoke.OuterBrowserCloseEvidence(True, True, True, True),
+        )
+        wait_for_client.assert_called_once_with(43128, mock.ANY)
+        browser_client.call.assert_called_once_with("Browser.close")
+        browser_client.close.assert_called_once_with()
+        page_client.close.assert_called_once_with()
+        wait_for_exit.assert_called_once_with(
+            browser,
+            reader,
+            mock.ANY,
+            description="outer-reload browser",
+        )
+
+    def test_clean_outer_browser_close_rejects_a_nonacknowledgement(self) -> None:
+        browser = mock.Mock()
+        browser.poll.return_value = None
+        reader = mock.Mock()
+        launch = smoke.OuterBrowserLaunch(
+            browser=browser,
+            debug_port=43128,
+            profile_path="/tmp/profile",
+            url="http://127.0.0.1:43127/",
+            stderr_reader=reader,
+        )
+        page_client = mock.Mock()
+        browser_client = mock.Mock()
+        browser_client.call.return_value = None
+        with (
+            mock.patch.object(
+                smoke, "wait_for_browser_client", return_value=browser_client
+            ),
+            mock.patch.object(smoke, "wait_for_browser_group_exit") as wait_for_exit,
+            self.assertRaisesRegex(M0Error, "acknowledgement is invalid"),
+        ):
+            smoke.close_outer_browser_cleanly(
+                launch, page_client, time.monotonic() + 1
+            )
+
+        browser_client.close.assert_called_once_with()
+        page_client.close.assert_called_once_with()
+        wait_for_exit.assert_not_called()
 
     def test_url_allows_cold_start_timeout_and_preserves_its_cap(self) -> None:
         with temporary_server() as (server, _escrow):

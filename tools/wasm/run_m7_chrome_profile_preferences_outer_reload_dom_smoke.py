@@ -12,12 +12,13 @@ HistoryService. The Browser close, BookmarkModel local write/reopen and model
 destruction markers, CookieManager flush/reopen and SQLite backend-close
 markers, and History/Favicons backend-close marker must precede the Preferences
 fence. Document one writes A, Bookmark A, Cookie A, and History A. After its
-exact, redacted lifecycle receipt and flushed ready acknowledgement, this
-runner issues a DevTools ``Page.reload`` command. Document two reads A,
-Bookmark A, Cookie A, and History A before it writes B, Bookmark B, Cookie B,
-and History B. After the same flushed ready barrier, the runner issues one
-further DevTools ``Page.reload``; document three reads B, Bookmark B, Cookie
-B, and History A/B.
+exact, redacted lifecycle receipt and flushed ready acknowledgement, the
+default runner issues DevTools ``Page.reload``. Its explicit process-boundary
+mode instead cleanly exits the host browser before document two. Document two
+reads A, Bookmark A, Cookie A, and History A before it writes B, Bookmark B,
+Cookie B, and History B. After the same flushed ready barrier, the runner
+issues one further DevTools ``Page.reload``; document three reads B, Bookmark
+B, Cookie B, and History A/B.
 
 This is deliberately non-gating and makes no crash-recovery, normal navigation
 history, desktop History UI/bookmark graph, general HTTP cookie request path,
@@ -35,9 +36,11 @@ value.
 
 Each later bootstrap requires all of: validated predecessor ready state,
 runner arming, a fresh top-level Fetch-Metadata document navigation, and a
-flushed ``reload`` document-evidence POST with a newer time origin. The
-retained CDP client independently requires that each Page.reload replace the
-same root frame with a new loader. No host JavaScript self-navigates.
+flushed document-evidence POST with a newer time origin. By default the
+runner uses DevTools ``Page.reload``. Its explicit process-boundary mode first
+requires a clean outer Chrome exit, then starts a distinct Chrome process with
+the same temporary user-data directory and the same still-running origin
+server before document two. No host JavaScript self-navigates.
 """
 
 from __future__ import annotations
@@ -62,18 +65,24 @@ import threading
 import time
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.request import urlopen
 
 from m0_common import M0Error, REPO_ROOT, load_manifest
-from m4_cdp import unused_loopback_port, wait_for_page_client
+from m4_cdp import DevToolsClient, unused_loopback_port, wait_for_page_client
+from m9_browser_cleanup import (
+    BrowserStderrReader,
+    abort_browser_group,
+    wait_for_browser_group_exit,
+)
 from m9_descriptor_snapshot import snapshot_regular_file, snapshot_regular_files
-from run_browser_smoke import browser_command, find_browser, stop_browser
+from run_browser_smoke import browser_command, find_browser
 
 
 SENTINEL = "CHROMIUM_WASM_M7_CHROME_PROFILE_PREFERENCES_OUTER_RELOAD_DOM"
-CASE = "chrome_profile_preferences_three_outer_document_reload_m7"
+CASE = "chrome_profile_preferences_three_outer_document_persistence_m7"
 SCOPE = (
     "same-origin-three-outer-documents-chrome-wasm-m7-profile-preferences-"
-    "bookmark-model-cookie-manager-and-history-test-modules-orderly-reload-only"
+    "bookmark-model-cookie-manager-and-history-test-modules-orderly-handoff-only"
 )
 PRODUCT_MODULE_NAME = "chrome_wasm_m7_profile_preferences_test"
 PRODUCT_GN_TARGET = "//chrome:chrome_wasm"
@@ -104,6 +113,7 @@ MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024 * 1024
 MAX_OUTPUT_LINES = 128
 MAX_BROWSER_STDERR_LINES = 300
 FINAL_QUIESCENCE_MS = 50
+OUTER_BROWSER_CLOSE_TIMEOUT_SECONDS = 10.0
 MIN_TIMEOUT_SECONDS = 20.0
 MAX_TIMEOUT_MS = 300_000
 SUPPRESSED_BROWSER_STDERR_TOKEN = "<suppressed-browser-stderr-token>"
@@ -303,23 +313,34 @@ class TokenEscrow:
     token_b_digest: str
 
 
+def redact_browser_stderr_record(
+    record: str,
+    escrow: TokenEscrow,
+    raw_token_seen: threading.Event,
+) -> str:
+    """Suppress an unsafe record before any bounded diagnostic queue sees it."""
+
+    normalized = record.rstrip()
+    if escrow.token_a in normalized or escrow.token_b in normalized:
+        raw_token_seen.set()
+        # Keep diagnostics and error paths structurally useful without ever
+        # retaining a value whose presence already fails the run.
+        return SUPPRESSED_BROWSER_STDERR_TOKEN
+    return normalized
+
+
 def drain_browser_stderr(
     stream: Any,
     destination: deque[str],
     escrow: TokenEscrow,
     raw_token_seen: threading.Event,
 ) -> None:
-    """Suppresses browser stderr while detecting raw escrow-token leakage."""
+    """Legacy stream adapter for focused token-hygiene unit coverage."""
 
     for line in stream:
-        normalized = line.rstrip()
-        if escrow.token_a in normalized or escrow.token_b in normalized:
-            raw_token_seen.set()
-            # Keep diagnostics and error paths structurally useful without
-            # ever retaining a value whose presence already fails the run.
-            destination.append(SUPPRESSED_BROWSER_STDERR_TOKEN)
-        else:
-            destination.append(normalized)
+        destination.append(
+            redact_browser_stderr_record(line, escrow, raw_token_seen)
+        )
 
 
 @dataclass(frozen=True)
@@ -341,6 +362,58 @@ class PhaseResult:
 class RootFrameIdentity:
     frame_id: str
     loader_id: str
+
+
+@dataclass(frozen=True)
+class OuterBrowserLaunch:
+    """One independently launched host Chrome process and its owned resources."""
+
+    browser: subprocess.Popen[str]
+    debug_port: int
+    profile_path: str
+    url: str
+    stderr_reader: BrowserStderrReader
+
+
+@dataclass(frozen=True)
+class OuterBrowserCloseEvidence:
+    """Evidence required before reusing an outer Chrome profile directory."""
+
+    browser_close_acknowledged: bool
+    zero_exit_status: bool
+    stderr_eof: bool
+    process_group_gone: bool
+
+
+def has_fresh_outer_browser_preferences_persistence_evidence(
+    *,
+    outer_browser_processes_started: int,
+    first_outer_browser_close: OuterBrowserCloseEvidence | None,
+    second_outer_browser_identity_distinct: bool,
+    same_outer_profile_for_phase_two: bool,
+    same_origin_for_phase_two: bool,
+    phase_two_navigation_type: str,
+    phase_two: PhaseResult,
+    phase_two_read_a_validated: bool,
+    phase_two_fresh_document_time_origin: bool,
+) -> bool:
+    """Return only the complete normal-Prefs fresh-host-process witness."""
+
+    return (
+        outer_browser_processes_started == 2
+        and first_outer_browser_close is not None
+        and first_outer_browser_close.browser_close_acknowledged
+        and first_outer_browser_close.zero_exit_status
+        and first_outer_browser_close.stderr_eof
+        and first_outer_browser_close.process_group_gone
+        and second_outer_browser_identity_distinct
+        and same_outer_profile_for_phase_two
+        and same_origin_for_phase_two
+        and phase_two_navigation_type == "navigate"
+        and phase_two.navigation_type == "navigate"
+        and phase_two_read_a_validated
+        and phase_two_fresh_document_time_origin
+    )
 
 
 class ProtocolStateError(M0Error):
@@ -395,9 +468,16 @@ def _valid_document(value: object) -> bool:
 
 
 class OuterReloadSession:
-    """In-memory escrow and phase machine for one browser lifetime."""
+    """In-memory escrow and phase machine for one three-document run."""
 
-    def __init__(self, result_token: str, session: str, escrow: TokenEscrow):
+    def __init__(
+        self,
+        result_token: str,
+        session: str,
+        escrow: TokenEscrow,
+        *,
+        phase_two_navigation_type: str = "reload",
+    ):
         if (
             not CAPABILITY_RE.fullmatch(result_token)
             or not CAPABILITY_RE.fullmatch(session)
@@ -407,11 +487,13 @@ class OuterReloadSession:
             or secrets.compare_digest(escrow.token_a, escrow.token_b)
             or escrow.token_a_digest != _sha256_text(escrow.token_a)
             or escrow.token_b_digest != _sha256_text(escrow.token_b)
+            or phase_two_navigation_type not in ("navigate", "reload")
         ):
             raise M0Error("outer-reload escrow is invalid")
         self._result_token = result_token
         self._session = session
         self.escrow = escrow
+        self._phase_two_navigation_type = phase_two_navigation_type
         self._lock = threading.Lock()
         # Held by POST from acceptance through 204 flush and state commit.
         self._ack_gate = threading.Lock()
@@ -426,7 +508,16 @@ class OuterReloadSession:
         self._phase_two_validated_time: float | None = None
         self._phase_two_armed = False
         self._phase_three_armed = False
-        self._top_level_reload_seen_for: int | None = None
+        self._top_level_transition_seen_for: int | None = None
+
+    def expected_navigation_type(self, ordinal: int) -> str:
+        if ordinal == 1:
+            return "navigate"
+        if ordinal == 2:
+            return self._phase_two_navigation_type
+        if ordinal == 3:
+            return "reload"
+        raise M0Error("outer-reload phase ordinal is invalid")
 
     def matches_result_token(self, value: object) -> bool:
         return isinstance(value, str) and secrets.compare_digest(value, self._result_token)
@@ -455,10 +546,10 @@ class OuterReloadSession:
             if self._phase_two is None:
                 if (
                     not self._phase_two_armed
-                    or self._top_level_reload_seen_for != 2
+                    or self._top_level_transition_seen_for != 2
                     or self._pending is not None
                     or 2 in self._bootstrap_served
-                    or evidence.navigation_type != "reload"
+                    or evidence.navigation_type != self.expected_navigation_type(2)
                     or self._phase_one_validated_time is None
                     or evidence.time_origin <= self._phase_one_validated_time
                 ):
@@ -467,11 +558,11 @@ class OuterReloadSession:
                 return True
             if (
                 not self._phase_three_armed
-                or self._top_level_reload_seen_for != 3
+                or self._top_level_transition_seen_for != 3
                 or self._phase_three is not None
                 or self._pending is not None
                 or 3 in self._bootstrap_served
-                or evidence.navigation_type != "reload"
+                or evidence.navigation_type != self.expected_navigation_type(3)
                 or self._phase_two_validated_time is None
                 or evidence.time_origin <= self._phase_two_validated_time
             ):
@@ -518,6 +609,7 @@ class OuterReloadSession:
             "scope": SCOPE,
             "ordinal": ordinal,
             "mode": _phase_mode(ordinal),
+            "expectedNavigationType": self.expected_navigation_type(ordinal),
             "tokenA": None if ordinal == 3 else self.escrow.token_a,
             "tokenB": None if ordinal == 1 else self.escrow.token_b,
             "tokenADigest": None if ordinal == 3 else self.escrow.token_a_digest,
@@ -541,21 +633,21 @@ class OuterReloadSession:
         with self._lock:
             if (
                 self._phase_two_armed
-                and self._top_level_reload_seen_for is None
+                and self._top_level_transition_seen_for is None
                 and self._phase_two is None
                 and self._pending is None
                 and 2 not in self._bootstrap_served
             ):
-                self._top_level_reload_seen_for = 2
+                self._top_level_transition_seen_for = 2
                 return True
             if (
                 self._phase_three_armed
-                and self._top_level_reload_seen_for is None
+                and self._top_level_transition_seen_for is None
                 and self._phase_three is None
                 and self._pending is None
                 and 3 not in self._bootstrap_served
             ):
-                self._top_level_reload_seen_for = 3
+                self._top_level_transition_seen_for = 3
                 return True
             return False
 
@@ -616,7 +708,7 @@ class OuterReloadSession:
                 or self._phase_two_armed
                 or self._phase_two is not None
                 or self._pending is not None
-                or self._top_level_reload_seen_for is not None
+                or self._top_level_transition_seen_for is not None
                 or self._phase_one.time_origin != float(phase_one_time_origin)
             ):
                 raise ProtocolStateError("outer-reload phase authorization conflict")
@@ -640,13 +732,13 @@ class OuterReloadSession:
                 or self._phase_three_armed
                 or self._phase_three is not None
                 or self._pending is not None
-                or self._top_level_reload_seen_for != 2
+                or self._top_level_transition_seen_for != 2
                 or self._phase_two.time_origin != float(phase_two_time_origin)
             ):
                 raise ProtocolStateError("outer-reload phase authorization conflict")
             self._phase_two_validated_time = float(phase_two_time_origin)
             self._phase_three_armed = True
-            self._top_level_reload_seen_for = None
+            self._top_level_transition_seen_for = None
 
 
 class ChromeProfilePreferencesOuterReloadServer(ThreadingHTTPServer):
@@ -1027,6 +1119,7 @@ def create_server(
     *,
     host_dir: Path | None = None,
     runner_source_path: Path | None = None,
+    phase_two_navigation_type: str = "reload",
 ) -> ChromeProfilePreferencesOuterReloadServer:
     """Snapshot every served input before accepting a browser connection."""
 
@@ -1066,7 +1159,12 @@ def create_server(
     server.result_queue = queue.Queue(maxsize=3)
     server.ready_queue = queue.Queue(maxsize=3)
     server.receipt_lock = threading.Lock()
-    server.session = OuterReloadSession(result_token, session, escrow)
+    server.session = OuterReloadSession(
+        result_token,
+        session,
+        escrow,
+        phase_two_navigation_type=phase_two_navigation_type,
+    )
     # ``smoke_url`` installs the one exact navigated query before browser
     # launch.  Static snapshot requests have no query and cannot arm phase 2.
     server.expected_root_query: dict[str, str] | None = None
@@ -1502,7 +1600,7 @@ def _validate_document(
     time_origin = document.get("timeOrigin")
     navigation_type = document.get("navigationType")
     if (
-        navigation_type != ("navigate" if ordinal == 1 else "reload")
+        navigation_type != expected.navigation_type
         or not isinstance(time_origin, (int, float))
         or isinstance(time_origin, bool)
         or not math.isfinite(float(time_origin))
@@ -1602,16 +1700,22 @@ def validate_ready_receipt(value: dict[str, Any], expected: PhaseResult) -> None
 
 
 def validate_outer_document_transitions(
-    first: PhaseResult, second: PhaseResult, third: PhaseResult
+    first: PhaseResult,
+    second: PhaseResult,
+    third: PhaseResult,
+    *,
+    phase_two_navigation_type: str = "reload",
 ) -> None:
     if (
+        phase_two_navigation_type not in ("navigate", "reload")
+        or
         first.ordinal != 1
         or second.ordinal != 2
         or third.ordinal != 3
         or first.origin != second.origin
         or second.origin != third.origin
         or first.navigation_type != "navigate"
-        or second.navigation_type != "reload"
+        or second.navigation_type != phase_two_navigation_type
         or third.navigation_type != "reload"
         or second.time_origin <= first.time_origin
         or third.time_origin <= second.time_origin
@@ -1766,6 +1870,137 @@ def reload_outer_document(
             return candidate
 
 
+def _browser_devtools_websocket_url(port: int, deadline: float) -> str:
+    """Returns only the browser-wide loopback DevTools endpoint."""
+
+    endpoint = f"http://127.0.0.1:{port}/json/version"
+    last_error = "outer-reload browser DevTools endpoint did not become ready"
+    while time.monotonic() < deadline:
+        try:
+            with urlopen(endpoint, timeout=1) as response:
+                value = json.loads(response.read().decode("utf-8"))
+            websocket_url = (
+                value.get("webSocketDebuggerUrl") if isinstance(value, dict) else None
+            )
+            parsed = urlsplit(websocket_url) if isinstance(websocket_url, str) else None
+            if (
+                parsed is None
+                or parsed.scheme != "ws"
+                or parsed.hostname != "127.0.0.1"
+                or parsed.port != port
+                or not parsed.path.startswith("/devtools/browser/")
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise M0Error("outer-reload browser DevTools endpoint is invalid")
+            return websocket_url
+        except (OSError, UnicodeDecodeError, ValueError, M0Error) as error:
+            last_error = str(error)
+        time.sleep(0.05)
+    raise M0Error(last_error)
+
+
+def wait_for_browser_client(port: int, deadline: float) -> DevToolsClient:
+    """Connects to Chrome's browser-wide DevTools target on one loopback port."""
+
+    return DevToolsClient(_browser_devtools_websocket_url(port, deadline))
+
+
+def close_outer_browser_cleanly(
+    launch: OuterBrowserLaunch,
+    page_client: Any,
+    deadline: float,
+) -> OuterBrowserCloseEvidence:
+    """Close one host Chrome through CDP and prove its group is fully gone."""
+
+    browser = launch.browser
+    if browser.poll() is not None:
+        raise M0Error("outer-reload browser exited before its requested clean close")
+    browser_client: DevToolsClient | None = None
+    try:
+        browser_client = wait_for_browser_client(launch.debug_port, deadline)
+        # DevToolsClient.call returns only after a matching, non-error CDP
+        # response, which is the Browser.close acknowledgement required before
+        # the runner accepts process-group disappearance as a graceful exit.
+        acknowledgement = browser_client.call("Browser.close")
+        if not isinstance(acknowledgement, dict):
+            raise M0Error("outer-reload Browser.close acknowledgement is invalid")
+    finally:
+        if browser_client is not None:
+            browser_client.close()
+        page_client.close()
+
+    close_deadline = min(
+        deadline, time.monotonic() + OUTER_BROWSER_CLOSE_TIMEOUT_SECONDS
+    )
+    remaining = close_deadline - time.monotonic()
+    if remaining <= 0:
+        raise M0Error("outer-reload browser clean close timed out")
+    wait_for_browser_group_exit(
+        browser,
+        launch.stderr_reader,
+        remaining,
+        description="outer-reload browser",
+    )
+    return OuterBrowserCloseEvidence(
+        browser_close_acknowledged=True,
+        zero_exit_status=browser.returncode == 0,
+        stderr_eof=launch.stderr_reader.reached_eof,
+        process_group_gone=True,
+    )
+
+
+def launch_outer_browser(
+    browser_path: Path,
+    profile_path: str,
+    url: str,
+    *,
+    no_sandbox: bool,
+    browser_stderr: deque[str],
+    escrow: TokenEscrow,
+    raw_token_seen: threading.Event,
+) -> OuterBrowserLaunch:
+    """Starts one independently observable outer Chrome process."""
+
+    debug_port = unused_loopback_port()
+    command = browser_command(browser_path, profile_path, url, no_sandbox=no_sandbox)
+    command[1:1] = [
+        "--enable-logging=stderr",
+        "--remote-allow-origins=http://localhost",
+        "--remote-debugging-address=127.0.0.1",
+        f"--remote-debugging-port={debug_port}",
+    ]
+    browser = subprocess.Popen(
+        command,
+        cwd=REPO_ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    assert browser.stderr is not None
+    stderr_reader = BrowserStderrReader(
+        browser.stderr,
+        browser_stderr,
+        name="chromium-wasm-m7-profile-preferences-outer-reload-browser-stderr",
+        transform_record=lambda record: redact_browser_stderr_record(
+            record, escrow, raw_token_seen
+        ),
+    )
+    try:
+        stderr_reader.start()
+    except BaseException:
+        abort_browser_group(browser, stderr_reader)
+        raise
+    return OuterBrowserLaunch(
+        browser=browser,
+        debug_port=debug_port,
+        profile_path=profile_path,
+        url=url,
+        stderr_reader=stderr_reader,
+    )
+
+
 def write_failure_diagnostics(
     diagnostics_dir: Path,
     *,
@@ -1837,7 +2072,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Run three Chrome Wasm Preferences documents separated by two real "
-            "DevTools page reloads."
+            "DevTools page transitions."
         ),
         epilog=(
             "Build the normal artifact with: buildtools/linux64/gn gen "
@@ -1851,15 +2086,23 @@ def main() -> int:
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--diagnostics-dir", type=Path)
     parser.add_argument("--no-sandbox", action="store_true")
+    parser.add_argument(
+        "--fresh-outer-browser-after-phase-one",
+        action="store_true",
+        help=(
+            "require a clean first outer Chrome exit, then run phase two in "
+            "a distinct Chrome process using the same temporary user-data "
+            "directory and same-origin server"
+        ),
+    )
     parser.add_argument("--timeout", type=parse_outer_reload_timeout, default=120.0)
     args = parser.parse_args()
     if args.timeout < MIN_TIMEOUT_SECONDS:
         parser.error(f"--timeout must be at least {MIN_TIMEOUT_SECONDS:g} seconds")
 
-    browser: subprocess.Popen[str] | None = None
+    active_launch: OuterBrowserLaunch | None = None
     browser_stderr: deque[str] = deque(maxlen=MAX_BROWSER_STDERR_LINES)
     browser_stderr_raw_token_seen = threading.Event()
-    stderr_thread: threading.Thread | None = None
     client: Any | None = None
     outer_profile: tempfile.TemporaryDirectory[str] | None = None
     server: ChromeProfilePreferencesOuterReloadServer | None = None
@@ -1870,6 +2113,19 @@ def main() -> int:
     stage = "initialize"
     successful = False
     failure_reported = False
+    first_outer_launch: OuterBrowserLaunch | None = None
+    first_outer_browser_close: OuterBrowserCloseEvidence | None = None
+    final_outer_browser_close: OuterBrowserCloseEvidence | None = None
+    outer_browser_processes_started = 0
+    second_outer_browser_identity_distinct = False
+    same_outer_profile_for_phase_two = False
+    same_origin_for_phase_two = False
+    phase_two_read_a_validated = False
+    phase_two_fresh_document_time_origin = False
+    fresh_outer_browser_persistence_proven = False
+    phase_two_navigation_type = (
+        "navigate" if args.fresh_outer_browser_after_phase_one else "reload"
+    )
 
     try:
         stage = "load-manifest"
@@ -1879,7 +2135,15 @@ def main() -> int:
         escrow = new_token_escrow()
         out_dir = args.out_dir if args.out_dir.is_absolute() else REPO_ROOT / args.out_dir
         stage = "create-server"
-        server = create_server("127.0.0.1", 0, out_dir, result_token, session, escrow)
+        server = create_server(
+            "127.0.0.1",
+            0,
+            out_dir,
+            result_token,
+            session,
+            escrow,
+            phase_two_navigation_type=phase_two_navigation_type,
+        )
         artifact = artifact_identity(server)
         capture_harness = capture_harness_identity(server)
         server_thread = threading.Thread(
@@ -1907,45 +2171,29 @@ def main() -> int:
         outer_profile = tempfile.TemporaryDirectory(
             prefix="chromium-wasm-m7-profile-preferences-outer-reload-"
         )
-        debug_port = unused_loopback_port()
         stage = "launch-browser"
-        command = browser_command(
-            browser_path, outer_profile.name, url, no_sandbox=args.no_sandbox
+        active_launch = launch_outer_browser(
+            browser_path,
+            outer_profile.name,
+            url,
+            no_sandbox=args.no_sandbox,
+            browser_stderr=browser_stderr,
+            escrow=escrow,
+            raw_token_seen=browser_stderr_raw_token_seen,
         )
-        command[1:1] = [
-            "--enable-logging=stderr",
-            "--remote-allow-origins=http://localhost",
-            "--remote-debugging-address=127.0.0.1",
-            f"--remote-debugging-port={debug_port}",
-        ]
-        browser = subprocess.Popen(
-            command,
-            cwd=REPO_ROOT,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
-        assert browser.stderr is not None
-        stderr_thread = threading.Thread(
-            target=drain_browser_stderr,
-            args=(
-                browser.stderr,
-                browser_stderr,
-                escrow,
-                browser_stderr_raw_token_seen,
-            ),
-            name="chromium-wasm-m7-profile-preferences-outer-reload-browser-stderr",
-            daemon=True,
-        )
-        stderr_thread.start()
+        first_outer_launch = active_launch
+        outer_browser_processes_started += 1
         deadline = time.monotonic() + args.timeout
         expected_page_url_prefix = url.split("?", 1)[0]
 
         stage = "connect-devtools-phase-one"
-        client = wait_for_page_client(debug_port, expected_page_url_prefix, deadline)
+        client = wait_for_page_client(
+            active_launch.debug_port, expected_page_url_prefix, deadline
+        )
         stage = "wait-phase-one-result"
-        first_result = wait_for_phase_result(browser, browser_stderr, server, 1, deadline)
+        first_result = wait_for_phase_result(
+            active_launch.browser, browser_stderr, server, 1, deadline
+        )
         result_ordinals.add(1)
         stage = "validate-phase-one-result"
         first = validate_phase_result(
@@ -1961,25 +2209,64 @@ def main() -> int:
             session=session,
         )
         stage = "wait-phase-one-ready"
-        first_ready = wait_for_ready_receipt(browser, browser_stderr, server, 1, deadline)
+        first_ready = wait_for_ready_receipt(
+            active_launch.browser, browser_stderr, server, 1, deadline
+        )
         ready_ordinals.add(1)
         stage = "validate-phase-one-ready"
         validate_ready_receipt(first_ready, first)
-        stage = "prepare-cdp-outer-reload"
-        root_frame = prepare_outer_document_reload(client)
-        stage = "arm-phase-two-document-evidence"
-        server.session.arm_phase_two(first.time_origin)
-        stage = "reload-outer-document-phase-two"
-        reload_outer_document(
-            client,
-            browser,
-            browser_stderr,
-            root_frame,
-            expected_page_url_prefix,
-            deadline,
-        )
+        if args.fresh_outer_browser_after_phase_one:
+            stage = "close-first-outer-browser"
+            first_outer_browser_close = close_outer_browser_cleanly(
+                active_launch, client, deadline
+            )
+            client = None
+            active_launch = None
+            stage = "arm-phase-two-fresh-browser-document-evidence"
+            server.session.arm_phase_two(first.time_origin)
+            stage = "launch-fresh-outer-browser-phase-two"
+            next_launch = launch_outer_browser(
+                browser_path,
+                outer_profile.name,
+                url,
+                no_sandbox=args.no_sandbox,
+                browser_stderr=browser_stderr,
+                escrow=escrow,
+                raw_token_seen=browser_stderr_raw_token_seen,
+            )
+            outer_browser_processes_started += 1
+            active_launch = next_launch
+            if (
+                first_outer_launch is None
+                or active_launch.browser.pid == first_outer_launch.browser.pid
+                or active_launch.profile_path != first_outer_launch.profile_path
+                or active_launch.url != first_outer_launch.url
+            ):
+                raise M0Error("outer-reload fresh browser identity is invalid")
+            second_outer_browser_identity_distinct = True
+            same_outer_profile_for_phase_two = True
+            stage = "connect-devtools-phase-two-fresh-browser"
+            client = wait_for_page_client(
+                active_launch.debug_port, expected_page_url_prefix, deadline
+            )
+        else:
+            stage = "prepare-cdp-outer-reload"
+            root_frame = prepare_outer_document_reload(client)
+            stage = "arm-phase-two-document-evidence"
+            server.session.arm_phase_two(first.time_origin)
+            stage = "reload-outer-document-phase-two"
+            reload_outer_document(
+                client,
+                active_launch.browser,
+                browser_stderr,
+                root_frame,
+                expected_page_url_prefix,
+                deadline,
+            )
         stage = "wait-phase-two-result"
-        second_result = wait_for_phase_result(browser, browser_stderr, server, 2, deadline)
+        second_result = wait_for_phase_result(
+            active_launch.browser, browser_stderr, server, 2, deadline
+        )
         result_ordinals.add(2)
         stage = "validate-phase-two-result"
         second = validate_phase_result(
@@ -1995,10 +2282,33 @@ def main() -> int:
             session=session,
         )
         stage = "wait-phase-two-ready"
-        second_ready = wait_for_ready_receipt(browser, browser_stderr, server, 2, deadline)
+        second_ready = wait_for_ready_receipt(
+            active_launch.browser, browser_stderr, server, 2, deadline
+        )
         ready_ordinals.add(2)
         stage = "validate-phase-two-ready"
         validate_ready_receipt(second_ready, second)
+        phase_two_read_a_validated = True
+        phase_two_fresh_document_time_origin = second.time_origin > first.time_origin
+        if args.fresh_outer_browser_after_phase_one:
+            same_origin_for_phase_two = second.origin == expected_origin
+            fresh_outer_browser_persistence_proven = (
+                has_fresh_outer_browser_preferences_persistence_evidence(
+                    outer_browser_processes_started=outer_browser_processes_started,
+                    first_outer_browser_close=first_outer_browser_close,
+                    second_outer_browser_identity_distinct=(
+                        second_outer_browser_identity_distinct
+                    ),
+                    same_outer_profile_for_phase_two=same_outer_profile_for_phase_two,
+                    same_origin_for_phase_two=same_origin_for_phase_two,
+                    phase_two_navigation_type=phase_two_navigation_type,
+                    phase_two=second,
+                    phase_two_read_a_validated=phase_two_read_a_validated,
+                    phase_two_fresh_document_time_origin=(
+                        phase_two_fresh_document_time_origin
+                    ),
+                )
+            )
         stage = "prepare-cdp-outer-reload-phase-three"
         root_frame = prepare_outer_document_reload(client)
         stage = "arm-phase-three-document-evidence"
@@ -2006,14 +2316,16 @@ def main() -> int:
         stage = "reload-outer-document-phase-three"
         reload_outer_document(
             client,
-            browser,
+            active_launch.browser,
             browser_stderr,
             root_frame,
             expected_page_url_prefix,
             deadline,
         )
         stage = "wait-phase-three-result"
-        third_result = wait_for_phase_result(browser, browser_stderr, server, 3, deadline)
+        third_result = wait_for_phase_result(
+            active_launch.browser, browser_stderr, server, 3, deadline
+        )
         result_ordinals.add(3)
         stage = "validate-phase-three-result"
         third = validate_phase_result(
@@ -2029,12 +2341,25 @@ def main() -> int:
             session=session,
         )
         stage = "wait-phase-three-ready"
-        third_ready = wait_for_ready_receipt(browser, browser_stderr, server, 3, deadline)
+        third_ready = wait_for_ready_receipt(
+            active_launch.browser, browser_stderr, server, 3, deadline
+        )
         ready_ordinals.add(3)
         stage = "validate-phase-three-ready"
         validate_ready_receipt(third_ready, third)
         stage = "validate-three-document-transition"
-        validate_outer_document_transitions(first, second, third)
+        validate_outer_document_transitions(
+            first,
+            second,
+            third,
+            phase_two_navigation_type=phase_two_navigation_type,
+        )
+        stage = "close-final-outer-browser"
+        final_outer_browser_close = close_outer_browser_cleanly(
+            active_launch, client, deadline
+        )
+        client = None
+        active_launch = None
         successful = True
     except Exception as error:
         if args.diagnostics_dir is not None:
@@ -2043,7 +2368,9 @@ def main() -> int:
                     args.diagnostics_dir,
                     stage=stage,
                     error=error,
-                    browser=browser,
+                    browser=(
+                        active_launch.browser if active_launch is not None else None
+                    ),
                     browser_stderr=browser_stderr,
                     result_ordinals=result_ordinals,
                     ready_ordinals=ready_ordinals,
@@ -2055,10 +2382,13 @@ def main() -> int:
     finally:
         if client is not None:
             client.close()
-        if browser is not None:
-            stop_browser(browser)
-        if stderr_thread is not None:
-            stderr_thread.join(timeout=3)
+        if active_launch is not None:
+            try:
+                abort_browser_group(
+                    active_launch.browser, active_launch.stderr_reader
+                )
+            except M0Error:
+                successful = False
         if browser_stderr_raw_token_seen.is_set():
             successful = False
         try:
@@ -2066,7 +2396,10 @@ def main() -> int:
         except M0Error:
             successful = False
         if outer_profile is not None:
-            outer_profile.cleanup()
+            try:
+                outer_profile.cleanup()
+            except OSError:
+                successful = False
 
     if browser_stderr_raw_token_seen.is_set():
         if not failure_reported:
@@ -2085,8 +2418,49 @@ def main() -> int:
             {
                 "case": CASE,
                 "documents": 3,
+                "freshOuterBrowserAfterPhaseOne": args.fresh_outer_browser_after_phase_one,
+                "freshOuterBrowserProcessPreferencesPersistenceProven":
+                    fresh_outer_browser_persistence_proven,
+                "normalPreferencesPersistenceAcrossFreshOuterBrowserProven":
+                    fresh_outer_browser_persistence_proven,
+                "outerBrowserProcesses": outer_browser_processes_started,
+                "phaseTwoTransition": (
+                    "outer-browser-restart"
+                    if args.fresh_outer_browser_after_phase_one
+                    else "page-reload"
+                ),
+                "firstOuterBrowserCloseAcknowledged": (
+                    first_outer_browser_close is not None
+                    and first_outer_browser_close.browser_close_acknowledged
+                ),
+                "firstOuterBrowserGracefulClose": (
+                    first_outer_browser_close is not None
+                    and first_outer_browser_close.zero_exit_status
+                    and first_outer_browser_close.stderr_eof
+                    and first_outer_browser_close.process_group_gone
+                ),
+                "firstOuterBrowserForcedTermination": (
+                    False if args.fresh_outer_browser_after_phase_one else None
+                ),
+                "sameOuterBrowserProfileDirectoryForPhaseTwo": (
+                    same_outer_profile_for_phase_two
+                ),
+                "sameOriginForPhaseTwo": same_origin_for_phase_two,
+                "phaseTwoReadAValidated": phase_two_read_a_validated,
+                "phaseTwoFreshDocumentTimeOrigin": (
+                    phase_two_fresh_document_time_origin
+                ),
+                "finalOuterBrowserGracefulClose": (
+                    final_outer_browser_close is not None
+                    and final_outer_browser_close.browser_close_acknowledged
+                    and final_outer_browser_close.zero_exit_status
+                    and final_outer_browser_close.stderr_eof
+                    and final_outer_browser_close.process_group_gone
+                ),
                 "m7GateComplete": False,
-                "outerDocumentReload": True,
+                "outerDocumentReload": not args.fresh_outer_browser_after_phase_one,
+                "physicalCrashBehaviorProven": False,
+                "fullChromiumProfileProven": False,
                 "bookmarkModelFlushReopenAndClose": True,
                 "bookmarkModelFullServicePersistenceProven": False,
                 "cookieManagerFlushReopenAndBackendClose": True,

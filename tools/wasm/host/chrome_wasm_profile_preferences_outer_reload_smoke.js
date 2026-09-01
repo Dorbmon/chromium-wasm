@@ -9,16 +9,18 @@
 // History/Favicons database close, lifecycle fence, backend drain, and
 // cooperative lease. The host receives one runner-escrowed argument bundle per
 // document; it neither opens profile storage nor retains raw preference values
-// in a receipt. This is intentionally an orderly-reload witness, not a crash
+// in a receipt. This is intentionally an orderly handoff witness, not a crash
 // or recovery claim. Bookmark, Cookie, and History markers prove only their
 // narrow Chromium-side persistence paths, not full service or profile
-// persistence.
+// persistence. The runner may make document two a fresh outer-browser
+// navigation after a clean host-browser exit; the server-owned bootstrap
+// states the exact permitted navigation type, so the host never infers it.
 
 const HOST_PROTOCOL = 1;
-const CASE = "chrome_profile_preferences_three_outer_document_reload_m7";
+const CASE = "chrome_profile_preferences_three_outer_document_persistence_m7";
 const SCOPE =
     "same-origin-three-outer-documents-chrome-wasm-m7-profile-preferences-" +
-    "bookmark-model-cookie-manager-and-history-test-modules-orderly-reload-only";
+    "bookmark-model-cookie-manager-and-history-test-modules-orderly-handoff-only";
 const PRODUCT_MODULE_NAME = "chrome_wasm_m7_profile_preferences_test";
 const M7_MARKER_PREFIX = "CHROMIUM_WASM_M7_PREFS:";
 const SUPPRESSED_NATIVE_OUTPUT = "<suppressed-native-output>";
@@ -43,7 +45,7 @@ const CAPTURE_HARNESS_FIELDS = Object.freeze([
 ]);
 const BOOTSTRAP_FIELDS = Object.freeze([
   "protocol", "case", "scope", "ordinal", "mode", "tokenA", "tokenB",
-  "tokenADigest", "tokenBDigest",
+  "tokenADigest", "tokenBDigest", "expectedNavigationType",
 ]);
 const BOOTSTRAP_DOCUMENT_FIELDS = Object.freeze([
   "protocol", "case", "scope", "navigationType", "timeOrigin",
@@ -476,7 +478,9 @@ async function fetchBootstrap(context) {
                   !SHA256_RE.test(bootstrap.tokenB) ||
                   typeof bootstrap.tokenBDigest !== "string" ||
                   !SHA256_RE.test(bootstrap.tokenBDigest) ||
-                  (second && bootstrap.tokenA === bootstrap.tokenB)))) {
+                  (second && bootstrap.tokenA === bootstrap.tokenB))) ||
+      (bootstrap.expectedNavigationType !== "navigate" &&
+       bootstrap.expectedNavigationType !== "reload")) {
     throw new Error("outer-reload bootstrap is invalid");
   }
   const encoder = new TextEncoder();
@@ -489,6 +493,7 @@ async function fetchBootstrap(context) {
     throw new Error("outer-reload bootstrap token identity is invalid");
   }
   return Object.freeze({
+    expectedNavigationType: bootstrap.expectedNavigationType,
     mode: bootstrap.mode,
     ordinal: bootstrap.ordinal,
     rawTokens: Object.freeze({tokenA: bootstrap.tokenA, tokenB: bootstrap.tokenB}),
@@ -1259,8 +1264,7 @@ class PreferencesOuterReloadHost {
           result.ordinal === this.bootstrap.ordinal &&
           result.mode === this.bootstrap.mode && result.origin === location.origin &&
           result.crossOriginIsolated === true && result.sharedArrayBuffer === true &&
-          documentReceipt.navigationType ===
-              (result.ordinal === 1 ? "navigate" : "reload") &&
+          documentReceipt.navigationType === this.bootstrap.expectedNavigationType &&
           typeof documentReceipt.timeOrigin === "number" &&
           Number.isFinite(documentReceipt.timeOrigin) &&
           documentReceipt.timeOrigin > 0 &&
@@ -1340,10 +1344,7 @@ class PreferencesOuterReloadHost {
           typeof SharedArrayBuffer !== "function") {
         throw new Error("outer-reload requires cross-origin isolation");
       }
-      if ((this.bootstrap.ordinal === 1 &&
-           this.document.navigationType !== "navigate") ||
-          (this.bootstrap.ordinal !== 1 &&
-           this.document.navigationType !== "reload")) {
+      if (this.document.navigationType !== this.bootstrap.expectedNavigationType) {
         throw new Error("outer-reload document navigation is invalid");
       }
       this.canvas.focus({preventScroll: true});
