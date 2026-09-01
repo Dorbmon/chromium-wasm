@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Node contracts for the M7 structural default-partition shutdown host."""
+"""Node contracts for the M7 CookieManager/default-partition shutdown host."""
 
 from __future__ import annotations
 
@@ -43,6 +43,14 @@ export default function(options) {
   if (globalThis.__scenario === "lease-release") {
     options.printErr(retirement + "LEASE_RELEASED");
   } else {
+    options.printErr(shutdown + "PERSISTENT_COOKIE_WRITE_ACCEPTED");
+    options.printErr(shutdown + "PERSISTENT_COOKIE_STORE_FLUSH_ACKNOWLEDGED");
+    if (globalThis.__scenario !== "missing-cookie-sqlite-row-readback") {
+      options.printErr(shutdown + "PERSISTENT_COOKIE_SQLITE_ROW_READBACK_OK");
+    }
+    if (globalThis.__scenario !== "missing-cookie-close") {
+      options.printErr(shutdown + "PERSISTENT_COOKIE_STORE_CLOSED");
+    }
     options.printErr(shutdown + "PARTITION_CREATION_SEALED");
     options.printErr(shutdown + "LATE_PARTITION_CREATION_REJECTED");
     if (globalThis.__scenario !== "missing-notification") {
@@ -80,7 +88,7 @@ if (!globalThis.crypto || !globalThis.crypto.subtle) {
   globalThis.crypto = webcrypto;
 }
 const scenario = process.argv[1];
-if (!new Set(["resolved", "exit-status", "lease-release", "missing-notification"]).has(scenario)) {
+if (!new Set(["resolved", "exit-status", "lease-release", "missing-cookie-close", "missing-cookie-sqlite-row-readback", "missing-notification"]).has(scenario)) {
   throw new Error("test scenario is invalid");
 }
 globalThis.__scenario = scenario;
@@ -215,6 +223,10 @@ if (scenario === "resolved" || scenario === "exit-status") {
           "--wasm-persistent-default-partition-shutdown-probe=" ||
       result.run.markers.join(",") !== [
         "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:DEFAULT_PARTITION_CREATED",
+        "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:PERSISTENT_COOKIE_WRITE_ACCEPTED",
+        "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:PERSISTENT_COOKIE_STORE_FLUSH_ACKNOWLEDGED",
+        "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:PERSISTENT_COOKIE_SQLITE_ROW_READBACK_OK",
+        "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:PERSISTENT_COOKIE_STORE_CLOSED",
         "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:PARTITION_CREATION_SEALED",
         "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:LATE_PARTITION_CREATION_REJECTED",
         "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:PARTITION_DESTROY_NOTIFICATION_DISPATCHED",
@@ -225,6 +237,10 @@ if (scenario === "resolved" || scenario === "exit-status") {
       ].join(",") || result.run.processExitCount !== 1 ||
       result.run.processExitCode !== 23 || result.run.onExitCount !== 1 ||
       result.run.runtimeExitCode !== 23 || result.creationSealProven !== true ||
+      result.persistentDefaultPartitionCookieWriteAcceptedProven !== true ||
+      result.persistentDefaultPartitionCookieStoreFlushAcknowledgedProven !== true ||
+      result.persistentDefaultPartitionCookieSQLiteRowReadbackProven !== true ||
+      result.persistentDefaultPartitionCookieStoreCloseReceiptProven !== true ||
       result.partitionDestroyNotificationDispatchedProven !== true ||
       result.aggregatePartitionCloseProven !== false ||
       result.durableProfileFlushProven !== false ||
@@ -245,9 +261,19 @@ if (scenario === "resolved" || scenario === "exit-status") {
       result.run.markers.length !== 1 || root.dataset.state !== "fail") {
     throw new Error("host accepted a lease release marker");
   }
-} else {
+} else if (scenario === "missing-cookie-close") {
+  if (result.status !== "fail" || result.run.leaseReleasedMarkerObserved !== false ||
+      result.run.markers.length !== 4 || root.dataset.state !== "fail") {
+    throw new Error("host accepted a missing CookieManager close receipt");
+  }
+} else if (scenario === "missing-cookie-sqlite-row-readback") {
   if (result.status !== "fail" || result.run.leaseReleasedMarkerObserved !== false ||
       result.run.markers.length !== 3 || root.dataset.state !== "fail") {
+    throw new Error("host accepted a missing network-owned SQLite row readback receipt");
+  }
+} else {
+  if (result.status !== "fail" || result.run.leaseReleasedMarkerObserved !== false ||
+      result.run.markers.length !== 7 || root.dataset.state !== "fail") {
     throw new Error("host accepted a missing destruction-notification receipt");
   }
 }
@@ -256,7 +282,9 @@ if (scenario === "resolved" || scenario === "exit-status") {
 
 
 class M7PersistentDefaultPartitionShutdownProbeHostTest(unittest.TestCase):
-    def test_host_binds_each_structural_claim_to_its_named_receipt(self) -> None:
+    def test_host_binds_each_cookie_and_structural_claim_to_its_named_receipt(
+        self,
+    ) -> None:
         source = (TOOLS_DIR / "host" / (
             "chrome_wasm_persistent_default_partition_shutdown_probe_smoke.js"
         )).read_text(encoding="utf-8")
@@ -265,23 +293,40 @@ class M7PersistentDefaultPartitionShutdownProbeHostTest(unittest.TestCase):
             "this.run.markers[0] === DEFAULT_PARTITION_CREATED_MARKER", source
         )
         self.assertIn(
-            "this.run.markers[1] === PARTITION_CREATION_SEALED_MARKER", source
-        )
-        self.assertIn(
-            "this.run.markers[3] === PARTITION_DESTROY_NOTIFICATION_DISPATCHED_MARKER",
+            "this.run.markers[1] === PERSISTENT_COOKIE_WRITE_ACCEPTED_MARKER",
             source,
         )
         self.assertIn(
-            "this.run.markers[4] === PARTITION_MAP_DROPPED_MARKER", source
+            "this.run.markers[2] ===\n"
+            "              PERSISTENT_COOKIE_STORE_FLUSH_ACKNOWLEDGED_MARKER",
+            source,
         )
         self.assertIn(
-            "this.run.markers[5] === PREFERENCES_FENCE_OK_MARKER", source
+            "this.run.markers[3] === PERSISTENT_COOKIE_SQLITE_ROW_READBACK_OK_MARKER",
+            source,
         )
         self.assertIn(
-            "this.run.markers[6] === SEALED_LEASE_RETAINED_MARKER", source
+            "this.run.markers[4] === PERSISTENT_COOKIE_STORE_CLOSED_MARKER",
+            source,
         )
         self.assertIn(
-            "this.run.markers[7] === FAIL_CLOSED_RETIREMENT_MARKER", source
+            "this.run.markers[5] === PARTITION_CREATION_SEALED_MARKER", source
+        )
+        self.assertIn(
+            "this.run.markers[7] === PARTITION_DESTROY_NOTIFICATION_DISPATCHED_MARKER",
+            source,
+        )
+        self.assertIn(
+            "this.run.markers[8] === PARTITION_MAP_DROPPED_MARKER", source
+        )
+        self.assertIn(
+            "this.run.markers[9] === PREFERENCES_FENCE_OK_MARKER", source
+        )
+        self.assertIn(
+            "this.run.markers[10] === SEALED_LEASE_RETAINED_MARKER", source
+        )
+        self.assertIn(
+            "this.run.markers[11] === FAIL_CLOSED_RETIREMENT_MARKER", source
         )
 
     def run_scenario(self, scenario: str) -> None:
@@ -294,7 +339,7 @@ class M7PersistentDefaultPartitionShutdownProbeHostTest(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_host_accepts_the_exact_eight_marker_structural_receipt(self) -> None:
+    def test_host_accepts_the_exact_twelve_marker_cookie_shutdown_receipt(self) -> None:
         self.run_scenario("resolved")
 
     def test_host_accepts_an_exact_matching_nonzero_exit_status(self) -> None:
@@ -302,6 +347,14 @@ class M7PersistentDefaultPartitionShutdownProbeHostTest(unittest.TestCase):
 
     def test_host_rejects_a_clean_lease_release_marker_but_acks_receipt(self) -> None:
         self.run_scenario("lease-release")
+
+    def test_host_rejects_a_missing_cookie_close_receipt(self) -> None:
+        self.run_scenario("missing-cookie-close")
+
+    def test_host_rejects_a_missing_network_owned_sqlite_row_readback_receipt(
+        self,
+    ) -> None:
+        self.run_scenario("missing-cookie-sqlite-row-readback")
 
     def test_host_rejects_a_missing_destruction_notification_receipt(self) -> None:
         self.run_scenario("missing-notification")

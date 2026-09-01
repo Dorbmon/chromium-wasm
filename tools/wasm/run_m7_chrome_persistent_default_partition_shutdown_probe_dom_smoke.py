@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Run the narrow live persistent-default-partition structural shutdown probe.
+"""Run the narrow live persistent-default-partition shutdown probe.
 
 This runner admits only the fresh source-selected
 ``chrome_wasm_m7_persistent_default_partition_shutdown_probe`` artifact. It
@@ -12,7 +12,12 @@ starts one isolated host document with exactly this native argument:
   --wasm-persistent-default-partition-shutdown-probe=
 
 The host accepts only the fixed stderr sequence ``DEFAULT_PARTITION_CREATED``,
-``PARTITION_CREATION_SEALED``, ``LATE_PARTITION_CREATION_REJECTED``,
+``PERSISTENT_COOKIE_WRITE_ACCEPTED``,
+``PERSISTENT_COOKIE_STORE_FLUSH_ACKNOWLEDGED``,
+``PERSISTENT_COOKIE_SQLITE_ROW_READBACK_OK``,
+``PERSISTENT_COOKIE_STORE_CLOSED``,
+``PARTITION_CREATION_SEALED``,
+``LATE_PARTITION_CREATION_REJECTED``,
 ``PARTITION_DESTROY_NOTIFICATION_DISPATCHED`` (the real default partition's
 destruction notification returned), ``PARTITION_MAP_DROPPED`` (an immediate
 post-shutdown observation),
@@ -21,9 +26,10 @@ failure-retirement receipt, and
 ``FAIL_CLOSED_RETIREMENT``. It also requires the native positive nonzero
 process-exit import and Emscripten's matching ``onExit`` callback.
 
-This is a structural shutdown witness. It does not claim an aggregate
-StoragePartition close, a durable profile flush, a clean profile handoff,
-fresh-document persistence, crash recovery, or permanent map absence.
+This is one CookieManager plus structural shutdown witness. It does not claim
+an aggregate StoragePartition close, a durable profile flush, a clean profile
+handoff, fresh-document persistence, crash recovery, or permanent map
+absence.
 
 Build the dedicated artifact first:
 
@@ -66,8 +72,9 @@ from run_browser_smoke import browser_command, drain_stream, find_browser, stop_
 SENTINEL = "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE_DOM"
 CASE = "chrome_persistent_default_partition_shutdown_probe_m7"
 SCOPE = (
-    "one-fresh-source-selected-chrome-wasm-structural-default-partition-"
-    "destruction-notification-return-map-drop-and-fail-closed-retirement-"
+    "one-fresh-source-selected-chrome-wasm-persistent-default-partition-"
+    "cookie-write-flush-sqlite-row-readback-close-destruction-notification-"
+    "return-map-fail-closed-retirement-"
     "observation-only-no-durable-profile-claim"
 )
 PRODUCT_MODULE_NAME = "chrome_wasm_m7_persistent_default_partition_shutdown_probe"
@@ -101,6 +108,10 @@ SEALED_LEASE_RETAINED_MARKER = M7_FAILURE_RETIREMENT_PREFIX + "SEALED_LEASE_RETA
 LEASE_RELEASED_MARKER = M7_FAILURE_RETIREMENT_PREFIX + "LEASE_RELEASED"
 EXPECTED_MARKERS = (
     M7_SHUTDOWN_MARKER_PREFIX + "DEFAULT_PARTITION_CREATED",
+    M7_SHUTDOWN_MARKER_PREFIX + "PERSISTENT_COOKIE_WRITE_ACCEPTED",
+    M7_SHUTDOWN_MARKER_PREFIX + "PERSISTENT_COOKIE_STORE_FLUSH_ACKNOWLEDGED",
+    M7_SHUTDOWN_MARKER_PREFIX + "PERSISTENT_COOKIE_SQLITE_ROW_READBACK_OK",
+    M7_SHUTDOWN_MARKER_PREFIX + "PERSISTENT_COOKIE_STORE_CLOSED",
     M7_SHUTDOWN_MARKER_PREFIX + "PARTITION_CREATION_SEALED",
     M7_SHUTDOWN_MARKER_PREFIX + "LATE_PARTITION_CREATION_REJECTED",
     M7_SHUTDOWN_MARKER_PREFIX + "PARTITION_DESTROY_NOTIFICATION_DISPATCHED",
@@ -243,6 +254,10 @@ _RESULT_FIELDS = frozenset(
         "nonzeroProcessExitAndAckProven",
         "partitionDestroyNotificationDispatchedProven",
         "partitionMapDroppedProven",
+        "persistentDefaultPartitionCookieSQLiteRowReadbackProven",
+        "persistentDefaultPartitionCookieStoreCloseReceiptProven",
+        "persistentDefaultPartitionCookieStoreFlushAcknowledgedProven",
+        "persistentDefaultPartitionCookieWriteAcceptedProven",
         "preferencesFenceProven",
         "profilePersistenceProven",
         "profileStorageLeaseReleasedProven",
@@ -751,7 +766,7 @@ def _validate_run(value: object) -> None:
         or run.get("markerCount") != len(EXPECTED_MARKERS)
         or run.get("markerSequenceAccepted") is not True
         or run.get("markerSource")
-        != "stderr-only-fixed-structural-shutdown-grammar"
+        != "stderr-only-fixed-cookie-and-structural-shutdown-grammar"
         or run.get("markers") != list(EXPECTED_MARKERS)
         or run.get("noFailMarkerObserved") is not True
         or run.get("nonzeroProcessExitAndAckReceived") is not True
@@ -822,7 +837,7 @@ def validate_result(
     expected_origin: str,
     result_token: str,
 ) -> None:
-    """Accept only the fixed structural-shutdown failure-retirement receipt."""
+    """Accept only the fixed CookieManager and structural shutdown receipt."""
 
     if _contains_prohibited_value(result, result_token):
         raise M0Error("shutdown probe receipt contains its result capability")
@@ -839,6 +854,10 @@ def validate_result(
         "exactEmptyProbeSwitchPassed": True,
         "freshSourceSelectedShutdownArtifactProven": True,
         "actualPersistentDefaultPartitionCreatedProven": True,
+        "persistentDefaultPartitionCookieWriteAcceptedProven": True,
+        "persistentDefaultPartitionCookieStoreFlushAcknowledgedProven": True,
+        "persistentDefaultPartitionCookieSQLiteRowReadbackProven": True,
+        "persistentDefaultPartitionCookieStoreCloseReceiptProven": True,
         "creationSealProven": True,
         "partitionDestroyNotificationDispatchedProven": True,
         "partitionMapDroppedProven": True,
@@ -966,6 +985,10 @@ def shutdown_probe_summary() -> dict[str, object]:
         "m7GateComplete": False,
         "nonzeroProcessExitAndResultAckProven": True,
         "partitionMapDroppedProven": True,
+        "persistentDefaultPartitionCookieSQLiteRowReadbackProven": True,
+        "persistentDefaultPartitionCookieStoreCloseReceiptProven": True,
+        "persistentDefaultPartitionCookieStoreFlushAcknowledgedProven": True,
+        "persistentDefaultPartitionCookieWriteAcceptedProven": True,
         "preferencesFenceProven": True,
         "profilePersistenceProven": False,
         "sealedLeaseRetainedReceiptProven": True,

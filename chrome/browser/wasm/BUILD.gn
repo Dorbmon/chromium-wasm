@@ -1957,9 +1957,9 @@ config("wasm_profile_m7_persistent_default_partition_policy_probe_config") {
   defines = [ "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE=1" ]
 }
 
-# This probe changes only WasmProfile's default StoragePartition policy method
-# and BrowserMainParts' source-selected structural shutdown path. It has no
-# public class layout, service, or WebUI API.
+# This probe changes only WasmProfile's default StoragePartition policy method,
+# Content's selected Cookies SQLite path, and BrowserMainParts' source-selected
+# shutdown path. It has no public class layout or WebUI API.
 config("wasm_profile_m7_persistent_default_partition_shutdown_probe_config") {
   defines = [ "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1" ]
 }
@@ -2548,8 +2548,10 @@ if (enable_chromium_wasm_m7_persistent_default_partition_policy_probe) {
 }
 
 # This source-selected probe intentionally creates Chromium's real persistent
-# default StoragePartition. Its only positive receipt is synchronous map drop;
-# the caller always chooses V4 failure retirement rather than a clean drain.
+# default StoragePartition and materializes only its Cookies SQLite backend.
+# It requires that store's write/flush/SQLite-row-readback/close receipts
+# before the synchronous map drop; the caller always chooses V4 failure
+# retirement rather than a clean drain.
 if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
   source_set("wasm_profile_persistent_default_partition_shutdown_probe") {
     public = [ "wasm_profile_persistent_default_partition_shutdown_probe.h" ]
@@ -2561,7 +2563,13 @@ if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
       "//content/public/browser",
     ]
 
-    deps = [ "//base" ]
+    deps = [
+      "//base",
+      "//mojo/public/cpp/bindings",
+      "//net",
+      "//services/network/public/mojom",
+      "//url",
+    ]
   }
 
   test("wasm_profile_persistent_default_partition_shutdown_probe_unittests") {
@@ -3024,6 +3032,16 @@ source_set("wasm_content_browser_client") {
       ":wasm_profile_preferences_smoke",
       "//services/network/public/mojom",
     ]
+  }
+  if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
+    # This private source selection configures only the shutdown probe's
+    # default NetworkContext with its Cookies SQLite path. The define must be
+    # visible here as well as in WasmBrowserMainParts so the client source can
+    # neither select nor compile that path in normal Chrome.
+    configs += [
+      ":wasm_profile_m7_persistent_default_partition_shutdown_probe_config",
+    ]
+    deps += [ "//services/network/public/mojom" ]
   }
 }
 

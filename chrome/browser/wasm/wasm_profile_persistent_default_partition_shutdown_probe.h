@@ -7,6 +7,7 @@
 
 #include <cstddef>
 
+#include "base/functional/callback_forward.h"
 #include "chrome/browser/wasm/wasm_profile_ordered_drain_lifecycle.h"
 
 namespace content {
@@ -15,17 +16,19 @@ class BrowserContext;
 
 namespace chrome {
 
-// Fixed failure grammar for the source-selected structural shutdown probe.
-// Its only positive result is that Chromium constructed the real persistent
-// default StoragePartition and then synchronously dropped its map during
-// Profile shutdown. It deliberately does not claim an aggregate partition
-// close, a durable flush, recovery, or fresh-document persistence.
+// Fixed failure grammar for the source-selected shutdown probe. Its narrow
+// positive observations are one persistent default StoragePartition's
+// CookieManager write/flush/SQLite-row-readback/close receipts and the later
+// map-drop boundary.
+// It deliberately does not claim an aggregate partition close, a durable
+// profile flush, recovery, or fresh-document persistence.
 enum class WasmPersistentDefaultPartitionShutdownProbeFailureStage {
   kArguments,
   kStorage,
   kProfile,
   kConfiguration,
   kPartition,
+  kCookie,
   kNotification,
   kMap,
   kAdmission,
@@ -61,6 +64,18 @@ bool IsWasmPersistentDefaultPartitionShutdownNotificationWitness(
     bool notification_dispatched,
     bool content_notification_returned);
 
+// The source-selected probe accepts a persistent cookie write, awaits a
+// backing-store flush acknowledgement, asks the selected CookieManager's
+// SQLite owner to read a matching logical row on its own sequence, then
+// requires its test-only close completion receipt. This classifies one
+// selected cookie-store receipt; it is deliberately neither an aggregate
+// StoragePartition close nor a profile durability acknowledgement.
+bool IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(
+    bool cookie_write_accepted,
+    bool cookie_store_flush_acknowledged,
+    bool cookie_sqlite_row_readback_succeeded,
+    bool cookie_store_close_acknowledged);
+
 bool HasWasmPersistentDefaultPartitionShutdownProbeArguments();
 bool EnableWasmPersistentDefaultPartitionShutdownProbe();
 bool IsWasmPersistentDefaultPartitionShutdownProbeEnabled();
@@ -72,13 +87,18 @@ bool IsWasmPersistentDefaultPartitionShutdownProbeEnabled();
 void RecordWasmPersistentDefaultPartitionShutdownProbePolicyQuery();
 
 // Creates the actual default StoragePartition after verifying that
-// CreateDefault() selected a non-memory configuration. The helper retains the
-// profile-I/O hold until the profile has synchronously dropped its partition
-// map. Callers must still choose failure retirement rather than a clean V4
-// handoff.
+// CreateDefault() selected a non-memory configuration. It then writes one
+// persistent test cookie through that partition's cloned CookieManager,
+// awaits the backing-store flush acknowledgement, performs a network-owned
+// matching SQLite logical-row readback, and receives the test-only
+// cookie-store close completion receipt before invoking
+// |on_cookie_store_closed|. The helper retains the profile-I/O hold through
+// the later synchronous partition-map drop. Callers must still choose failure
+// retirement rather than a clean V4 handoff.
 bool RunWasmPersistentDefaultPartitionShutdownProbe(
     content::BrowserContext* browser_context,
-    WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold);
+    WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
+    base::OnceCallback<void(bool success)> on_cookie_store_closed);
 
 // Seals BrowserContext's lazy partition-creation entry point before profile
 // teardown. It is deliberately separate from the later map-drop observation:

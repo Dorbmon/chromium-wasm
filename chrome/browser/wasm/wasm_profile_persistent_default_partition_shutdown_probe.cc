@@ -5,17 +5,35 @@
 #include "chrome/browser/wasm/wasm_profile_persistent_default_partition_shutdown_probe.h"
 
 #include <cstdio>
+#include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 
+#include "base/check.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
+#include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
+#include "base/sequence_checker.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
+#include "base/timer/timer.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/storage_partition_config.h"
 #include "content/public/browser/wasm_storage_partition_shutdown_test_support.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "net/cookies/canonical_cookie.h"
+#include "net/cookies/cookie_access_result.h"
+#include "net/cookies/cookie_inclusion_status.h"
+#include "net/cookies/cookie_options.h"
+#include "net/cookies/cookie_partition_key_collection.h"
+#include "services/network/public/mojom/cookie_manager.mojom.h"
+#include "url/gurl.h"
 
 namespace chrome {
 
@@ -25,6 +43,11 @@ constexpr char kProbeSwitch[] =
     "wasm-persistent-default-partition-shutdown-probe";
 constexpr char kMarkerPrefix[] =
     "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:";
+constexpr char kCookieUrl[] =
+    "https://wasm-persistent-default-partition-shutdown.test/";
+constexpr char kCookieName[] =
+    "wasm_m7_persistent_default_partition_shutdown";
+constexpr base::TimeDelta kCookieOperationTimeout = base::Seconds(20);
 
 const char* FailureStageName(
     WasmPersistentDefaultPartitionShutdownProbeFailureStage stage) {
@@ -40,6 +63,8 @@ const char* FailureStageName(
       return "configuration";
     case WasmPersistentDefaultPartitionShutdownProbeFailureStage::kPartition:
       return "partition";
+    case WasmPersistentDefaultPartitionShutdownProbeFailureStage::kCookie:
+      return "cookie";
     case WasmPersistentDefaultPartitionShutdownProbeFailureStage::
         kNotification:
       return "notification";
@@ -89,7 +114,9 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
   }
 
   bool Run(content::BrowserContext* browser_context,
-           WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold) {
+           WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
+           base::OnceCallback<void(bool success)> on_cookie_store_closed) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(cookie_sequence_checker_);
     if (profile_io_hold_) {
       (void)profile_io_hold.Complete(
           WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
@@ -100,7 +127,7 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
     profile_io_hold_.emplace(std::move(profile_io_hold));
 
     if (!enabled_ || failure_reported_ || partition_created_ ||
-        !browser_context) {
+        !browser_context || !on_cookie_store_closed) {
       ReportFailure(
           WasmPersistentDefaultPartitionShutdownProbeFailureStage::kProfile);
       return false;
@@ -157,11 +184,71 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
     notification_armed_ = true;
     partition_created_ = true;
     EmitMarker("DEFAULT_PARTITION_CREATED");
+
+    // This source-selected clone is the only asynchronous owner retained by
+    // the probe. Its network-owned SQLite row readback and backend-close
+    // receipts must both return before BrowserMainParts begins ordinary
+    // profile teardown; the primary admission remains live until the later
+    // map-drop boundary.
+    network::mojom::CookieManager* const cookie_manager =
+        partition->GetCookieManagerForBrowserProcess();
+    if (!cookie_manager) {
+      ReportFailure(
+          WasmPersistentDefaultPartitionShutdownProbeFailureStage::kCookie);
+      return false;
+    }
+    cookie_manager->CloneInterface(
+        cookie_manager_.BindNewPipeAndPassReceiver());
+    if (!cookie_manager_.is_bound()) {
+      ReportFailure(
+          WasmPersistentDefaultPartitionShutdownProbeFailureStage::kCookie);
+      return false;
+    }
+
+    cookie_phase_started_ = true;
+    cookie_completion_ = std::move(on_cookie_store_closed);
+    cookie_manager_.set_disconnect_handler(base::BindOnce(
+        &WasmPersistentDefaultPartitionShutdownProbeState::
+            OnCookieManagerDisconnected,
+        weak_ptr_factory_.GetWeakPtr()));
+
+    net::CookieInclusionStatus syntax_status;
+    const std::string cookie_value = base::NumberToString(
+        base::Time::Now().ToDeltaSinceWindowsEpoch().InMicroseconds());
+    pending_cookie_ = net::CanonicalCookie::Create(
+        GURL(kCookieUrl),
+        base::StrCat({kCookieName, "=", cookie_value,
+                      "; Max-Age=31536000; Path=/; Secure; HttpOnly; "
+                      "SameSite=Lax"}),
+        base::Time::Now(), /*server_time=*/std::nullopt,
+        /*cookie_partition_key=*/std::nullopt,
+        net::CookieSourceType::kOther, &syntax_status);
+    if (!pending_cookie_ || !syntax_status.IsInclude() ||
+        !pending_cookie_->IsPersistent() || !BeginCookieOperation()) {
+      FailCookieReceipt();
+      return true;
+    }
+
+    cookie_operation_timeout_.Start(
+        FROM_HERE, kCookieOperationTimeout,
+        base::BindOnce(&WasmPersistentDefaultPartitionShutdownProbeState::
+                           OnCookieOperationTimeout,
+                       weak_ptr_factory_.GetWeakPtr()));
+    cookie_manager_->SetCanonicalCookie(
+        *pending_cookie_, GURL(kCookieUrl),
+        net::CookieOptions::MakeAllInclusive(),
+        base::BindOnce(&WasmPersistentDefaultPartitionShutdownProbeState::
+                           OnCookieSet,
+                       weak_ptr_factory_.GetWeakPtr()));
     return true;
   }
 
   void NotifyCreationSealed(content::BrowserContext* browser_context) {
     if (!enabled_ || failure_reported_ || !partition_created_ ||
+        !IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(
+            cookie_write_accepted_, cookie_store_flush_acknowledged_,
+            cookie_sqlite_row_readback_succeeded_,
+            cookie_store_close_acknowledged_) ||
         creation_sealed_ || !browser_context) {
       ReportFailure(WasmPersistentDefaultPartitionShutdownProbeFailureStage::
                         kMap);
@@ -196,6 +283,10 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
 
   void NotifyMapDropped(content::BrowserContext* browser_context) {
     if (!enabled_ || failure_reported_ || !partition_created_ ||
+        !IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(
+            cookie_write_accepted_, cookie_store_flush_acknowledged_,
+            cookie_sqlite_row_readback_succeeded_,
+            cookie_store_close_acknowledged_) ||
         !creation_sealed_ ||
         !IsWasmPersistentDefaultPartitionShutdownNotificationWitness(
             notification_armed_, notification_dispatched_,
@@ -235,6 +326,10 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
 
   bool CanUseFailureRetirement() const {
     return enabled_ && partition_created_ && creation_sealed_ &&
+           IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(
+               cookie_write_accepted_, cookie_store_flush_acknowledged_,
+               cookie_sqlite_row_readback_succeeded_,
+               cookie_store_close_acknowledged_) &&
            IsWasmPersistentDefaultPartitionShutdownNotificationWitness(
                notification_armed_, notification_dispatched_,
                content::DidWasmStoragePartitionShutdownNotificationForTest()) &&
@@ -255,6 +350,16 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
   bool completed() const { return completed_ && !failure_reported_; }
 
   void Fail() {
+    if (cookie_phase_started_ && !cookie_phase_completed_) {
+      FailCookieReceipt();
+      return;
+    }
+    if (cookie_completion_delivery_pending_) {
+      // The backend-close completion callback has returned but its UI-sequence
+      // handoff has not yet run. A fallback shutdown must win over a stale
+      // success result and leave the profile admission terminal-failed.
+      cookie_completion_success_ = false;
+    }
     ReportFailure(
         WasmPersistentDefaultPartitionShutdownProbeFailureStage::kProfile);
   }
@@ -270,16 +375,209 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
       // source-selected singleton holding a stale partition pointer.
       content::CancelWasmStoragePartitionShutdownNotificationForTest();
     }
-    (void)CompleteProfileIOHold(
-        WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
+    // Before the network-owned SQLite row readback and close receipt, retain
+    // the clone and its admission for process lifetime. The outer V4 seam
+    // must refuse rather than retire an OPFS backend while CookieManager may
+    // still use its SQLite task sequence. Once those receipts exist, an
+    // unrelated later failure can make the admission terminal-failed normally.
+    if (cookie_phase_started_ && !cookie_phase_completed_) {
+      cookie_quarantined_ = true;
+      cookie_operation_timeout_.Stop();
+    } else {
+      (void)CompleteProfileIOHold(
+          WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
+    }
     std::fprintf(stderr, "%sFAIL stage=%s\n", kMarkerPrefix,
                  FailureStageName(stage));
     std::fflush(stderr);
   }
 
  private:
+  bool BeginCookieOperation() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(cookie_sequence_checker_);
+    if (!cookie_phase_started_ || cookie_phase_completed_ ||
+        cookie_quarantined_ || operation_pending_ ||
+        !cookie_manager_.is_bound()) {
+      return false;
+    }
+    operation_pending_ = true;
+    return true;
+  }
+
+  bool ConsumeCookieOperationReply() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(cookie_sequence_checker_);
+    if (!cookie_phase_started_ || cookie_phase_completed_ ||
+        cookie_quarantined_) {
+      return false;
+    }
+    if (!operation_pending_) {
+      FailCookieReceipt();
+      return false;
+    }
+    operation_pending_ = false;
+    return true;
+  }
+
+  void OnCookieSet(net::CookieAccessResult access_result) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(cookie_sequence_checker_);
+    if (!ConsumeCookieOperationReply()) {
+      return;
+    }
+    if (!access_result.status.IsInclude()) {
+      FailCookieReceipt();
+      return;
+    }
+
+    cookie_write_accepted_ = true;
+    EmitMarker("PERSISTENT_COOKIE_WRITE_ACCEPTED");
+    if (!BeginCookieOperation()) {
+      FailCookieReceipt();
+      return;
+    }
+    cookie_manager_->FlushCookieStore(base::BindOnce(
+        &WasmPersistentDefaultPartitionShutdownProbeState::OnCookieFlushed,
+        weak_ptr_factory_.GetWeakPtr()));
+  }
+
+  void OnCookieFlushed() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(cookie_sequence_checker_);
+    if (!ConsumeCookieOperationReply()) {
+      return;
+    }
+
+    cookie_store_flush_acknowledged_ = true;
+    EmitMarker("PERSISTENT_COOKIE_STORE_FLUSH_ACKNOWLEDGED");
+    if (!pending_cookie_ || !BeginCookieOperation()) {
+      FailCookieReceipt();
+      return;
+    }
+    cookie_manager_->VerifyPersistentCookieStoreReadbackForTesting(
+        *pending_cookie_,
+        base::BindOnce(&WasmPersistentDefaultPartitionShutdownProbeState::
+                           OnCookieStoreReadback,
+                       weak_ptr_factory_.GetWeakPtr()));
+  }
+
+  void OnCookieStoreReadback(bool success) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(cookie_sequence_checker_);
+    if (!ConsumeCookieOperationReply()) {
+      return;
+    }
+    if (!success) {
+      FailCookieReceipt();
+      return;
+    }
+
+    cookie_sqlite_row_readback_succeeded_ = true;
+    EmitMarker("PERSISTENT_COOKIE_SQLITE_ROW_READBACK_OK");
+    if (!BeginCookieOperation()) {
+      FailCookieReceipt();
+      return;
+    }
+    cookie_manager_->CloseCookieStoreForTesting(base::BindOnce(
+        &WasmPersistentDefaultPartitionShutdownProbeState::OnCookieStoreClosed,
+        weak_ptr_factory_.GetWeakPtr()));
+  }
+
+  void OnCookieStoreClosed(bool success) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(cookie_sequence_checker_);
+    if (!ConsumeCookieOperationReply()) {
+      return;
+    }
+    if (!success) {
+      FailCookieReceipt();
+      return;
+    }
+
+    cookie_store_close_acknowledged_ = true;
+    EmitMarker("PERSISTENT_COOKIE_STORE_CLOSED");
+    CompleteCookiePhase(/*success=*/true);
+  }
+
+  void OnCookieManagerDisconnected() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(cookie_sequence_checker_);
+    if (!cookie_phase_started_ || cookie_phase_completed_ ||
+        cookie_store_close_acknowledged_) {
+      return;
+    }
+    FailCookieReceipt();
+  }
+
+  void OnCookieOperationTimeout() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(cookie_sequence_checker_);
+    if (!cookie_phase_started_ || cookie_phase_completed_) {
+      return;
+    }
+    FailCookieReceipt();
+  }
+
+  void FailCookieReceipt() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(cookie_sequence_checker_);
+    if (!cookie_phase_started_ || cookie_phase_completed_) {
+      return;
+    }
+    ReportFailure(
+        WasmPersistentDefaultPartitionShutdownProbeFailureStage::kCookie);
+    CompleteCookiePhase(/*success=*/false);
+  }
+
+  void CompleteCookiePhase(bool success) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(cookie_sequence_checker_);
+    if (!cookie_phase_started_ || cookie_phase_completed_) {
+      return;
+    }
+    cookie_operation_timeout_.Stop();
+    operation_pending_ = false;
+    cookie_phase_completed_ = true;
+    pending_cookie_.reset();
+    if (success) {
+      // The selected SQLite row readback and close completion callback have
+      // returned. Drop the remote before profile teardown.
+      cookie_manager_.reset();
+    } else {
+      // Do not turn a Mojo disconnect or timeout into a close acknowledgement.
+      // Keep the remote and primary admission quarantined so V4 refuses its
+      // post-ContentMain drain/retirement transaction.
+      cookie_quarantined_ = true;
+    }
+
+    CHECK(cookie_completion_);
+    // Do not let the CookieManager Mojo dispatch synchronously tear down its
+    // owning NetworkContext. BrowserMainParts resumes on the next UI turn,
+    // after this callback has completely unwound.
+    cookie_completion_delivery_pending_ = true;
+    cookie_completion_success_ = success;
+    CHECK(base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&WasmPersistentDefaultPartitionShutdownProbeState::
+                           DeliverCookiePhaseCompletion,
+                       base::Unretained(this))));
+  }
+
+  void DeliverCookiePhaseCompletion() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(cookie_sequence_checker_);
+    if (!cookie_completion_delivery_pending_) {
+      ReportFailure(
+          WasmPersistentDefaultPartitionShutdownProbeFailureStage::kCookie);
+      return;
+    }
+    cookie_completion_delivery_pending_ = false;
+    CHECK(cookie_completion_);
+    base::OnceCallback<void(bool success)> completion =
+        std::move(cookie_completion_);
+    const bool success = cookie_completion_success_;
+    // The profile owner may synchronously begin shutdown. This singleton is
+    // process-lifetime, but do not touch this callback state after handing
+    // control back to BrowserMainParts.
+    std::move(completion).Run(success);
+  }
+
   void NotifyPartitionDestroyNotification() {
     if (!enabled_ || failure_reported_ || !partition_created_ ||
+        !IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(
+            cookie_write_accepted_, cookie_store_flush_acknowledged_,
+            cookie_sqlite_row_readback_succeeded_,
+            cookie_store_close_acknowledged_) ||
         !creation_sealed_ || !notification_armed_ ||
         notification_dispatched_ ||
         !content::DidWasmStoragePartitionShutdownNotificationForTest()) {
@@ -311,6 +609,16 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
   bool policy_query_armed_ = false;
   int policy_query_count_ = 0;
   bool partition_created_ = false;
+  bool cookie_phase_started_ = false;
+  bool cookie_phase_completed_ = false;
+  bool cookie_quarantined_ = false;
+  bool operation_pending_ = false;
+  bool cookie_write_accepted_ = false;
+  bool cookie_store_flush_acknowledged_ = false;
+  bool cookie_store_close_acknowledged_ = false;
+  bool cookie_sqlite_row_readback_succeeded_ = false;
+  bool cookie_completion_delivery_pending_ = false;
+  bool cookie_completion_success_ = false;
   bool creation_sealed_ = false;
   bool notification_armed_ = false;
   bool notification_dispatched_ = false;
@@ -321,6 +629,13 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
   bool failure_reported_ = false;
   std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
       profile_io_hold_;
+  mojo::Remote<network::mojom::CookieManager> cookie_manager_;
+  std::unique_ptr<net::CanonicalCookie> pending_cookie_;
+  base::OnceCallback<void(bool success)> cookie_completion_;
+  base::OneShotTimer cookie_operation_timeout_;
+  SEQUENCE_CHECKER(cookie_sequence_checker_);
+  base::WeakPtrFactory<WasmPersistentDefaultPartitionShutdownProbeState>
+      weak_ptr_factory_{this};
 };
 
 WasmPersistentDefaultPartitionShutdownProbeState& GetProbeState() {
@@ -354,6 +669,16 @@ bool IsWasmPersistentDefaultPartitionShutdownNotificationWitness(
          content_notification_returned;
 }
 
+bool IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(
+    bool cookie_write_accepted,
+    bool cookie_store_flush_acknowledged,
+    bool cookie_sqlite_row_readback_succeeded,
+    bool cookie_store_close_acknowledged) {
+  return cookie_write_accepted && cookie_store_flush_acknowledged &&
+         cookie_sqlite_row_readback_succeeded &&
+         cookie_store_close_acknowledged;
+}
+
 bool HasWasmPersistentDefaultPartitionShutdownProbeArguments() {
   return base::CommandLine::ForCurrentProcess()->HasSwitch(kProbeSwitch);
 }
@@ -372,8 +697,10 @@ void RecordWasmPersistentDefaultPartitionShutdownProbePolicyQuery() {
 
 bool RunWasmPersistentDefaultPartitionShutdownProbe(
     content::BrowserContext* browser_context,
-    WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold) {
-  return GetProbeState().Run(browser_context, std::move(profile_io_hold));
+    WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
+    base::OnceCallback<void(bool success)> on_cookie_store_closed) {
+  return GetProbeState().Run(browser_context, std::move(profile_io_hold),
+                             std::move(on_cookie_store_closed));
 }
 
 void NotifyWasmPersistentDefaultPartitionShutdownProbeCreationSealed(

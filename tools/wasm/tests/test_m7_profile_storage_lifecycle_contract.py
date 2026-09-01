@@ -186,6 +186,22 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.main_parts = source(
             "chrome/browser/wasm/wasm_browser_main_parts.cc"
         )
+        self.content_browser_client = source(
+            "chrome/browser/wasm/wasm_content_browser_client.cc"
+        )
+        self.cookie_manager_mojom = source(
+            "services/network/public/mojom/cookie_manager.mojom"
+        )
+        self.cookie_manager = source("services/network/cookie_manager.cc")
+        self.session_cleanup_cookie_store = source(
+            "services/network/session_cleanup_cookie_store.cc"
+        )
+        self.sqlite_persistent_cookie_store = source(
+            "net/extras/sqlite/sqlite_persistent_cookie_store.cc"
+        )
+        self.sqlite_persistent_cookie_store_unit = source(
+            "net/extras/sqlite/sqlite_persistent_cookie_store_unittest.cc"
+        )
         self.chrome_build = source("chrome/BUILD.gn")
         self.wasm_browser_build = source("chrome/browser/wasm/BUILD.gn")
         self.profile = source("chrome/browser/wasm/wasm_profile.cc")
@@ -1261,6 +1277,151 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.assertNotIn("Flush(", self.shutdown_probe)
 
         for token in (
+            "partition->GetCookieManagerForBrowserProcess();",
+            "cookie_manager->CloneInterface(",
+            'EmitMarker("PERSISTENT_COOKIE_WRITE_ACCEPTED");',
+            "FlushCookieStore(",
+            'EmitMarker("PERSISTENT_COOKIE_STORE_FLUSH_ACKNOWLEDGED");',
+            "VerifyPersistentCookieStoreReadbackForTesting(",
+            "OnCookieStoreReadback",
+            'EmitMarker("PERSISTENT_COOKIE_SQLITE_ROW_READBACK_OK");',
+            "CloseCookieStoreForTesting(",
+            'EmitMarker("PERSISTENT_COOKIE_STORE_CLOSED");',
+            "SEQUENCE_CHECKER(cookie_sequence_checker_);",
+            "DCHECK_CALLED_ON_VALID_SEQUENCE(cookie_sequence_checker_);",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.shutdown_probe)
+        # The Chrome-side probe must not open its own SQLite handle.  The
+        # selected NetworkContext owns the database and its sequence/crypto
+        # state, so the probe can only ask CookieManager for this test seam.
+        for token in (
+            "base::ThreadPool",
+            "sql::Database",
+            "HasPersistentCookieDatabaseRecord",
+            "OnCookieDatabaseReadback",
+            "PERSISTENT_COOKIE_DATABASE_READBACK_OK",
+        ):
+            with self.subTest(unsafe_probe_token=token):
+                self.assertNotIn(token, self.shutdown_probe)
+        cookie_set_body = _body_after_signature(
+            self.shutdown_probe,
+            "  void OnCookieSet(net::CookieAccessResult access_result)",
+        )
+        cookie_flushed_body = _body_after_signature(
+            self.shutdown_probe, "  void OnCookieFlushed()"
+        )
+        cookie_closed_body = _body_after_signature(
+            self.shutdown_probe, "  void OnCookieStoreClosed(bool success)"
+        )
+        cookie_readback_body = _body_after_signature(
+            self.shutdown_probe, "  void OnCookieStoreReadback(bool success)"
+        )
+        self.assertLess(
+            cookie_set_body.index('EmitMarker("PERSISTENT_COOKIE_WRITE_ACCEPTED");'),
+            cookie_set_body.index("FlushCookieStore("),
+        )
+        self.assertLess(
+            cookie_flushed_body.index(
+                'EmitMarker("PERSISTENT_COOKIE_STORE_FLUSH_ACKNOWLEDGED");'
+            ),
+            cookie_flushed_body.index(
+                "VerifyPersistentCookieStoreReadbackForTesting("
+            ),
+        )
+        self.assertNotIn("CloseCookieStoreForTesting(", cookie_flushed_body)
+        self.assertLess(
+            cookie_readback_body.index(
+                'EmitMarker("PERSISTENT_COOKIE_SQLITE_ROW_READBACK_OK");'
+            ),
+            cookie_readback_body.index("CloseCookieStoreForTesting("),
+        )
+        self.assertNotIn("CompleteCookiePhase(", cookie_readback_body)
+        self.assertLess(
+            cookie_closed_body.index('EmitMarker("PERSISTENT_COOKIE_STORE_CLOSED");'),
+            cookie_closed_body.index("CompleteCookiePhase(/*success=*/true);"),
+        )
+        self.assertIn("ConsumeCookieOperationReply()", cookie_closed_body)
+
+        # The readback is intentionally owned by the Network service.  The
+        # Mojo entry point rejects nonpersistent CookieManagers, the session
+        # wrapper rejects absent/closed persistent stores, and the SQLite
+        # store reads its already-open backend on that backend's own sequence.
+        for token in (
+            "VerifyPersistentCookieStoreReadbackForTesting(",
+            "persistent SQLite backend",
+            "FlushCookieStore()",
+            "CloseCookieStoreForTesting()",
+        ):
+            with self.subTest(cookie_manager_mojom_token=token):
+                self.assertIn(token, self.cookie_manager_mojom)
+
+        cookie_manager_readback = _body_after_signature(
+            self.cookie_manager,
+            "void CookieManager::VerifyPersistentCookieStoreReadbackForTesting(",
+        )
+        for token in (
+            "if (!session_cleanup_cookie_store_)",
+            "std::move(callback).Run(false);",
+            "session_cleanup_cookie_store_->VerifyPersistentCookieStoreReadbackForTesting(",
+        ):
+            with self.subTest(cookie_manager_readback_token=token):
+                self.assertIn(token, cookie_manager_readback)
+
+        session_cleanup_readback = _body_after_signature(
+            self.session_cleanup_cookie_store,
+            "void SessionCleanupCookieStore::VerifyPersistentCookieStoreReadbackForTesting(",
+        )
+        for token in (
+            "!persistent_store_",
+            "persistent_store_closed_for_testing_",
+            "!expected_cookie.IsPersistent()",
+            "std::move(callback).Run(false);",
+            "persistent_store_->VerifyCookiePersistedForTesting(",
+        ):
+            with self.subTest(session_cleanup_readback_token=token):
+                self.assertIn(token, session_cleanup_readback)
+
+        sqlite_store_readback = _body_after_signature(
+            self.sqlite_persistent_cookie_store,
+            "void SQLitePersistentCookieStore::VerifyCookiePersistedForTesting(",
+        )
+        self.assertIn(
+            "backend_->VerifyCookiePersistedForTesting(", sqlite_store_readback
+        )
+        sqlite_backend_readback = _body_after_signature(
+            self.sqlite_persistent_cookie_store,
+            "void SQLitePersistentCookieStore::Backend::VerifyCookiePersistedForTesting(",
+        )
+        for token in (
+            "background_task_runner()->PostTask(",
+            "VerifyCookiePersistedInBackground",
+        ):
+            with self.subTest(sqlite_backend_readback_token=token):
+                self.assertIn(token, sqlite_backend_readback)
+        sqlite_background_readback = _body_after_signature(
+            self.sqlite_persistent_cookie_store,
+            "void SQLitePersistentCookieStore::Backend::VerifyCookiePersistedInBackground(",
+        )
+        for token in (
+            "db()",
+            "MakeCookiesFromSQLStatement(",
+            "MatchesPersistentCookieReadback(",
+            "PostClientTask(",
+        ):
+            with self.subTest(sqlite_background_readback_token=token):
+                self.assertIn(token, sqlite_background_readback)
+        self.assertIn(
+            "VerifyCookiePersistedForTestingReadsCommittedRow",
+            self.sqlite_persistent_cookie_store_unit,
+        )
+
+        self.assertIn(
+            "IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(",
+            self.shutdown_probe_unit,
+        )
+
+        for token in (
             "SealStoragePartitionCreationForShutdown();",
             "IsStoragePartitionCreationSealedForShutdown()",
             "content::StoragePartitionConfig::Create(",
@@ -1477,6 +1638,35 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         )
         self.assertIn("return false;", profile_policy)
 
+        # The shutdown artifact's non-memory default partition has no implicit
+        # Cookies path. This distinct client branch must configure exactly its
+        # Default/Network/Cookies SQLite file and stay source-selected.
+        for token in (
+            "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE",
+            "!context || in_memory || !relative_partition_path.empty()",
+            "network_context_params->file_paths",
+            "profile_path.AppendASCII(kWasmNetworkDataDirectory)",
+            'base::FilePath(FILE_PATH_LITERAL("Cookies"))',
+            "enable_encrypted_cookies = false",
+            "persist_session_cookies = false",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.content_browser_client)
+        shutdown_probe_target = _body_after_signature(
+            self.wasm_browser_build,
+            'source_set("wasm_profile_persistent_default_partition_shutdown_probe")',
+        )
+        self.assertNotIn('"//sql",', shutdown_probe_target)
+        content_browser_client_target = _body_after_signature(
+            self.wasm_browser_build, 'source_set("wasm_content_browser_client")'
+        )
+        for token in (
+            '":wasm_profile_m7_persistent_default_partition_shutdown_probe_config",',
+            'deps += [ "//services/network/public/mojom" ]',
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, content_browser_client_target)
+
         pre_main = _body_after_signature(
             self.main_parts, "int WasmBrowserMainParts::PreMainMessageLoopRun()"
         )
@@ -1487,7 +1677,16 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "RunWasmPersistentDefaultPartitionShutdownProbe(",
             pre_main[shutdown_branch:],
         )
-        self.assertIn("RequestShutdown();", pre_main[shutdown_branch:])
+        self.assertIn(
+            "OnWasmPersistentDefaultPartitionShutdownProbeCookieStoreClosed",
+            pre_main[shutdown_branch:],
+        )
+        cookie_close_callback = _body_after_signature(
+            self.main_parts,
+            "void WasmBrowserMainParts::\n"
+            "    OnWasmPersistentDefaultPartitionShutdownProbeCookieStoreClosed(",
+        )
+        self.assertIn("RequestShutdown();", cookie_close_callback)
 
         finish_shutdown = _body_after_signature(
             self.main_parts, "void WasmBrowserMainParts::FinishShutdown()"

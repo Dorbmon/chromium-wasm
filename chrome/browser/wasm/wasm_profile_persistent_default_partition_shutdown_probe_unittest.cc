@@ -69,4 +69,33 @@ TEST(WasmPersistentDefaultPartitionShutdownProbeTest,
       /*content_notification_returned=*/false));
 }
 
+TEST(WasmPersistentDefaultPartitionShutdownProbeTest,
+     RequiresCookieWriteFlushSQLiteRowReadbackAndCloseReceipts) {
+  EXPECT_TRUE(IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(
+      /*cookie_write_accepted=*/true,
+      /*cookie_store_flush_acknowledged=*/true,
+      /*cookie_sqlite_row_readback_succeeded=*/true,
+      /*cookie_store_close_acknowledged=*/true));
+  EXPECT_FALSE(IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(
+      /*cookie_write_accepted=*/false,
+      /*cookie_store_flush_acknowledged=*/true,
+      /*cookie_sqlite_row_readback_succeeded=*/true,
+      /*cookie_store_close_acknowledged=*/true));
+  EXPECT_FALSE(IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(
+      /*cookie_write_accepted=*/true,
+      /*cookie_store_flush_acknowledged=*/false,
+      /*cookie_sqlite_row_readback_succeeded=*/true,
+      /*cookie_store_close_acknowledged=*/true));
+  EXPECT_FALSE(IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(
+      /*cookie_write_accepted=*/true,
+      /*cookie_store_flush_acknowledged=*/true,
+      /*cookie_sqlite_row_readback_succeeded=*/false,
+      /*cookie_store_close_acknowledged=*/true));
+  EXPECT_FALSE(IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(
+      /*cookie_write_accepted=*/true,
+      /*cookie_store_flush_acknowledged=*/true,
+      /*cookie_sqlite_row_readback_succeeded=*/true,
+      /*cookie_store_close_acknowledged=*/false));
+}
+
 }  // namespace chrome

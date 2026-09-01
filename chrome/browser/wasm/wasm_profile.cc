@@ -1102,9 +1102,10 @@ bool WasmProfile::ShouldUseInMemoryDefaultStoragePartition() {
   chrome::RecordWasmPersistentDefaultPartitionPolicyProbePolicyQuery();
   return false;
 #elif defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
-  // The source-selected structural probe performs exactly one default
-  // partition accessor. It keeps normal Chrome's default partition volatile,
-  // and it always chooses failure retirement after its map-drop observation.
+  // The source-selected shutdown probe performs exactly one default partition
+  // accessor and one selected persistent CookieManager SQLite-row-readback/
+  // close receipt. It keeps normal Chrome's default partition volatile and
+  // always chooses failure retirement after its map-drop observation.
   chrome::RecordWasmPersistentDefaultPartitionShutdownProbePolicyQuery();
   return false;
 #else

@@ -27,7 +27,8 @@
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
 // GN's include checker does not evaluate this target-specific definition.
 #include "services/network/public/mojom/network_context.mojom.h"  // nogncheck
 #endif
@@ -50,7 +51,8 @@ constexpr char kWasmResourcesHost[] = "resources";
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
 constexpr char kWasmNetworkDataDirectory[] = "Network";
 #endif
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
@@ -276,6 +278,36 @@ void WasmContentBrowserClient::ConfigureNetworkContextParams(
   // on non-mobile platforms. The M7 probe has no such provider, so it proves
   // only an explicitly unencrypted test cookie database, never production
   // cookie-at-rest protection.
+  network_context_params->enable_encrypted_cookies = false;
+  network_context_params->restore_old_session_cookies = false;
+  network_context_params->persist_session_cookies = false;
+  network_context_params->http_cache_enabled = false;
+#endif
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // This fresh shutdown artifact configures exactly one non-memory default
+  // NetworkContext with a persistent Cookies SQLite store under
+  // Default/Network/Cookies. The matching probe accepts no aggregate partition
+  // result or durable profile claim; its network-owned SQLite row-readback and
+  // CookieManager close receipts are the sole service-level observations.
+  // Normal Wasm Chrome never compiles this branch and keeps its default
+  // partition in-memory.
+  if (!context || in_memory || !relative_partition_path.empty()) {
+    return;
+  }
+  const base::FilePath profile_path = context->GetPath();
+  if (profile_path.empty() || network_context_params->file_paths) {
+    return;
+  }
+  network_context_params->file_paths =
+      network::mojom::NetworkContextFilePaths::New();
+  network_context_params->file_paths->data_directory =
+      profile_path.AppendASCII(kWasmNetworkDataDirectory);
+  network_context_params->file_paths->cookie_database_name =
+      base::FilePath(FILE_PATH_LITERAL("Cookies"));
+  // The isolated Wasm test path has no OS crypto provider. This is an
+  // explicitly unencrypted test database, not a production cookie-at-rest
+  // configuration.
   network_context_params->enable_encrypted_cookies = false;
   network_context_params->restore_old_session_cookies = false;
   network_context_params->persist_session_cookies = false;

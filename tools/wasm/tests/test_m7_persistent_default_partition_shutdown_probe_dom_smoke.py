@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Focused contracts for the structural default-partition shutdown smoke."""
+"""Focused contracts for the CookieManager/default-partition shutdown smoke."""
 
 from __future__ import annotations
 
@@ -68,6 +68,10 @@ def passing_result(
         "exactEmptyProbeSwitchPassed": True,
         "freshSourceSelectedShutdownArtifactProven": True,
         "actualPersistentDefaultPartitionCreatedProven": True,
+        "persistentDefaultPartitionCookieWriteAcceptedProven": True,
+        "persistentDefaultPartitionCookieStoreFlushAcknowledgedProven": True,
+        "persistentDefaultPartitionCookieSQLiteRowReadbackProven": True,
+        "persistentDefaultPartitionCookieStoreCloseReceiptProven": True,
         "creationSealProven": True,
         "partitionDestroyNotificationDispatchedProven": True,
         "partitionMapDroppedProven": True,
@@ -98,7 +102,9 @@ def passing_result(
             "leaseReleasedMarkerObserved": False,
             "markerCount": len(smoke.EXPECTED_MARKERS),
             "markerSequenceAccepted": True,
-            "markerSource": "stderr-only-fixed-structural-shutdown-grammar",
+            "markerSource": (
+                "stderr-only-fixed-cookie-and-structural-shutdown-grammar"
+            ),
             "markers": list(smoke.EXPECTED_MARKERS),
             "noFailMarkerObserved": True,
             "nonzeroProcessExitAndAckReceived": True,
@@ -203,6 +209,13 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
             smoke.EXPECTED_MARKERS,
             (
                 smoke.M7_SHUTDOWN_MARKER_PREFIX + "DEFAULT_PARTITION_CREATED",
+                smoke.M7_SHUTDOWN_MARKER_PREFIX
+                + "PERSISTENT_COOKIE_WRITE_ACCEPTED",
+                smoke.M7_SHUTDOWN_MARKER_PREFIX
+                + "PERSISTENT_COOKIE_STORE_FLUSH_ACKNOWLEDGED",
+                smoke.M7_SHUTDOWN_MARKER_PREFIX
+                + "PERSISTENT_COOKIE_SQLITE_ROW_READBACK_OK",
+                smoke.M7_SHUTDOWN_MARKER_PREFIX + "PERSISTENT_COOKIE_STORE_CLOSED",
                 smoke.M7_SHUTDOWN_MARKER_PREFIX + "PARTITION_CREATION_SEALED",
                 smoke.M7_SHUTDOWN_MARKER_PREFIX
                 + "LATE_PARTITION_CREATION_REJECTED",
@@ -215,7 +228,9 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
             ),
         )
 
-    def test_accepts_only_the_fixed_structural_shutdown_receipt(self) -> None:
+    def test_accepts_only_the_fixed_cookie_and_structural_shutdown_receipt(
+        self,
+    ) -> None:
         validate(passing_result())
 
     def test_rejects_lease_release_wrong_order_zero_exit_and_broader_claims(self) -> None:
@@ -239,6 +254,28 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
         missing_notification["partitionDestroyNotificationDispatchedProven"] = False
         with self.assertRaises(M0Error):
             validate(missing_notification)
+
+        for field in (
+            "persistentDefaultPartitionCookieWriteAcceptedProven",
+            "persistentDefaultPartitionCookieStoreFlushAcknowledgedProven",
+            "persistentDefaultPartitionCookieSQLiteRowReadbackProven",
+            "persistentDefaultPartitionCookieStoreCloseReceiptProven",
+        ):
+            with self.subTest(field=field):
+                missing_cookie_receipt = passing_result()
+                missing_cookie_receipt[field] = False
+                with self.assertRaises(M0Error):
+                    validate(missing_cookie_receipt)
+
+        missing_cookie_marker = passing_result()
+        run = missing_cookie_marker["run"]
+        assert isinstance(run, dict)
+        markers = run["markers"]
+        assert isinstance(markers, list)
+        markers.pop(3)
+        run["markerCount"] = len(markers)
+        with self.assertRaises(M0Error):
+            validate(missing_cookie_marker)
 
         lease_released = passing_result()
         run = lease_released["run"]
