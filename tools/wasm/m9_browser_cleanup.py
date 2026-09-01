@@ -109,11 +109,13 @@ class BrowserStderrReader:
         thread_factory: Callable[..., Any] = threading.Thread,
         on_line: Callable[[str], None] | None = None,
         on_eof: Callable[[], None] | None = None,
+        transform_record: Callable[[str], str] | None = None,
     ):
         self._stream = stream
         self._destination = destination
         self._on_line = on_line
         self._on_eof = on_eof
+        self._transform_record = transform_record
         self._error: BaseException | None = None
         self._reached_eof = False
         self._started = False
@@ -206,6 +208,10 @@ class BrowserStderrReader:
 
     def _emit_record(self, record: str) -> None:
         text = record.rstrip()
+        if self._transform_record is not None:
+            text = self._transform_record(text)
+        if not isinstance(text, str):
+            raise TypeError("browser stderr record transform must return text")
         self._destination.append(text)
         if self._on_line is not None:
             self._on_line(text)
@@ -372,6 +378,55 @@ def stop_browser_group(
         "M9 browser cleanup required SIGKILL; normal browser shutdown cannot "
         "be proven"
     )
+
+
+def wait_for_browser_group_exit(
+    browser: subprocess.Popen[str],
+    reader: BrowserStderrReader,
+    timeout: float,
+    *,
+    description: str,
+    expected_returncode: int = 0,
+) -> None:
+    """Verify an independently requested graceful browser exit.
+
+    Some witnesses must ask Chrome itself to close (for example through CDP)
+    rather than signal its process group.  This helper deliberately sends no
+    signal: it accepts success only after the already-requested shutdown
+    reaps the leader, closes stderr cleanly, and removes every member of the
+    dedicated browser process group.  Callers retain the failure-path choice
+    of ``abort_browser_group`` if this evidence cannot be obtained.
+    """
+
+    if not reader.started:
+        raise M0Error(f"{description} browser stderr reader was never started")
+    if (
+        not isinstance(timeout, (int, float))
+        or isinstance(timeout, bool)
+        or timeout <= 0
+    ):
+        raise M0Error(f"{description} browser exit timeout is invalid")
+    if not isinstance(expected_returncode, int) or isinstance(
+        expected_returncode, bool
+    ):
+        raise M0Error(f"{description} expected browser exit status is invalid")
+
+    complete, wait_problem = _wait_for_browser_cleanup(browser, reader, timeout)
+    if not complete:
+        raise M0Error(
+            f"{description} browser did not exit with a closed stderr pipe "
+            "and no remaining process group"
+        ) from wait_problem
+    close_problem = _close_reader_after_cleanup(reader)
+    reader_problem = _reader_failure(reader)
+    if close_problem is not None:
+        raise M0Error(
+            f"could not close stopped {description} browser stderr pipe"
+        ) from close_problem
+    if reader_problem is not None:
+        raise reader_problem
+    if browser.returncode != expected_returncode:
+        raise M0Error(f"{description} browser exit status is invalid")
 
 
 def abort_browser_group(

@@ -156,6 +156,69 @@ class M9BrowserCleanupTest(unittest.TestCase):
         self.assertFalse(reader.is_alive())
         self.assertIsNotNone(process.returncode)
 
+    def test_wait_for_external_clean_exit_requires_zero_eof_and_absent_group(
+        self,
+    ) -> None:
+        process = self._start("import sys; sys.stderr.write('diagnostic\\n')")
+        reader = self._reader(process)
+        reader.start()
+
+        cleanup.wait_for_browser_group_exit(
+            process,
+            reader,
+            2,
+            description="test external browser close",
+        )
+
+        self.assertEqual(process.returncode, 0)
+        self.assertTrue(reader.reached_eof)
+        self.assertFalse(reader.is_alive())
+        with self.assertRaises(ProcessLookupError):
+            os.killpg(process.pid, 0)
+
+    def test_wait_for_external_clean_exit_rejects_nonzero_status(self) -> None:
+        process = self._start("import sys; sys.stderr.write('diagnostic\\n'); sys.exit(7)")
+        reader = self._reader(process)
+        reader.start()
+
+        with self.assertRaisesRegex(M0Error, "exit status is invalid"):
+            cleanup.wait_for_browser_group_exit(
+                process,
+                reader,
+                2,
+                description="test external browser close",
+            )
+
+        self.assertEqual(process.returncode, 7)
+        self.assertTrue(reader.reached_eof)
+        self.assertFalse(reader.is_alive())
+        with self.assertRaises(ProcessLookupError):
+            os.killpg(process.pid, 0)
+
+    def test_wait_for_external_clean_exit_rejects_a_retained_descendant(self) -> None:
+        process = self._start(
+            "import subprocess, sys, time; "
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+            "sys.stderr.write('leader exiting\\n')"
+        )
+        reader = self._reader(process)
+        reader.start()
+        try:
+            process.wait(timeout=2)
+            with self.assertRaisesRegex(M0Error, "did not exit"):
+                cleanup.wait_for_browser_group_exit(
+                    process,
+                    reader,
+                    0.1,
+                    description="test external browser close",
+                )
+            self.assertTrue(
+                reader.is_alive(),
+                "retained descendant unexpectedly released the inherited stderr pipe",
+            )
+        finally:
+            cleanup.abort_browser_group(process, reader)
+
     def test_same_group_descendant_cannot_be_reported_as_clean_success(self) -> None:
         # The leader exits immediately while a same-session child keeps the
         # inherited stderr FD open and ignores the cooperative signal.  The
@@ -394,6 +457,40 @@ class M9BrowserCleanupTest(unittest.TestCase):
         self.assertIsNone(reader.error)
         self.assertEqual(["first", "second"], lines)
         self.assertEqual([True], eof)
+
+    def test_reader_transforms_a_record_before_retaining_or_notifying(self) -> None:
+        lines: list[str] = []
+        destination: deque[str] = deque()
+        reader = cleanup.BrowserStderrReader(
+            io.StringIO("secret\\n"),
+            destination,
+            name="m9-browser-cleanup-record-transform",
+            on_line=lines.append,
+            transform_record=lambda _record: "<redacted>",
+        )
+
+        reader.start()
+        reader.join(timeout=1)
+
+        self.assertTrue(reader.reached_eof)
+        self.assertIsNone(reader.error)
+        self.assertEqual(["<redacted>"], list(destination))
+        self.assertEqual(["<redacted>"], lines)
+
+    def test_reader_rejects_nontext_record_transform_result(self) -> None:
+        reader = cleanup.BrowserStderrReader(
+            io.StringIO("secret\\n"),
+            deque(),
+            name="m9-browser-cleanup-invalid-record-transform",
+            transform_record=lambda _record: None,  # type: ignore[return-value]
+        )
+
+        reader.start()
+        reader.join(timeout=1)
+
+        self.assertFalse(reader.reached_eof)
+        self.assertIsInstance(reader.error, TypeError)
+        self.assertIn("transform must return text", str(reader.error))
 
     def test_reader_bounded_line_framing_preserves_lines_and_eof(self) -> None:
         lines: list[str] = []
