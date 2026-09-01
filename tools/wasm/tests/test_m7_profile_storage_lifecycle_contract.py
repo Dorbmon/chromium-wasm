@@ -39,6 +39,8 @@ _M7_STORAGE_MACROS = (
     "CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST",
     "CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST",
     "CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST",
+    "CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST",
+    "CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST",
 )
 _M7_STORAGE_GN_FLAGS = (
     "enable_chromium_wasm_m7_profile_preferences_test",
@@ -47,6 +49,9 @@ _M7_STORAGE_GN_FLAGS = (
     "enable_chromium_wasm_m7_profile_cookie_local_storage_test",
     "enable_chromium_wasm_m7_profile_cookie_history_local_storage_test",
     "enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test",
+    "enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_"
+    "local_storage_test",
+    "enable_chromium_wasm_m7_profile_indexed_db_test",
 )
 
 
@@ -101,6 +106,37 @@ def _body_after_signature(text: str, signature: str) -> str:
             text, opening_brace, signature
         )
     ]
+
+
+def _preprocessor_branch_after(text: str, signature: str) -> str:
+    """Returns one raw preprocessor branch after its unique condition.
+
+    ChromeMain's mutually exclusive M7 branches share a closing brace with
+    later source-selected mount branches. Raw C++ brace matching cannot model
+    that preprocessor structure, so use the next branch directive as the
+    boundary instead.
+    """
+
+    start = text.index(signature)
+    nested_preprocessor_depth = 0
+    offset = start
+    for line in text[start:].splitlines(keepends=True):
+        directive = line.lstrip()
+        if re.match(r"#\s*(if|ifdef|ifndef)\b", directive):
+            nested_preprocessor_depth += 1
+        elif re.match(r"#\s*endif\b", directive):
+            if nested_preprocessor_depth == 0:
+                return text[start:offset]
+            nested_preprocessor_depth -= 1
+        elif (
+            re.match(r"#\s*(elif|else)\b", directive)
+            and nested_preprocessor_depth == 0
+        ):
+            return text[start:offset]
+        offset += len(line)
+    raise AssertionError(
+        f"missing preprocessor branch boundary for {signature}"
+    )
 
 
 def _m7_storage_gn_blocks(text: str) -> list[tuple[int, int]]:
@@ -214,8 +250,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "wasmfs_create_directory(\n        kProfileRootPath, /*mode=*/0700, wasmfs_root_backend)",
             "create_profile_root_result != -EEXIST",
             "wasmfs_get_backend_by_path(kProfileRootPath)",
-            "parent_backend != wasmfs_root_backend",
-            "it is never a fallback\n    // to an unknown existing mount.",
+            "if (!parent_backend || parent_backend != wasmfs_root_backend)",
         ):
             with self.subTest(token=token):
                 self.assertIn(token, prepare_parent)
@@ -239,7 +274,8 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \\\n"
             "    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \\\n"
             "    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \\\n"
-            "    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)\n"
+            "    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \\\n"
+            "    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)\n"
             "// Mounts one dedicated Default-profile acceptance's leased V4 OPFS backend",
             self.storage_header,
         )
@@ -255,6 +291,8 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)\n"
             "    } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {\n"
             "#elif defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)\n"
+            "    } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {\n"
+            "#elif defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)\n"
             "    } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {\n"
             "#else\n"
             "    } else if (!chrome::InitializeWasmProfileStorage()) {\n"
@@ -837,22 +875,27 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
     def test_dedicated_artifacts_reject_unowned_profile_startup_before_mount(
         self,
     ) -> None:
-        preferences_capability = _body_after_signature(
+        preferences_capability = _preprocessor_branch_after(
             self.chrome_main,
             "if (!preferences_smoke_requested || !preferences_smoke_enabled)",
         )
-        database_capability = _body_after_signature(
+        database_capability = _preprocessor_branch_after(
             self.chrome_main,
             "if (!database_smoke_requested || !database_smoke_enabled)",
         )
-        local_storage_capability = _body_after_signature(
+        local_storage_capability = _preprocessor_branch_after(
             self.chrome_main,
             "if (!local_storage_smoke_requested || !local_storage_smoke_enabled)",
+        )
+        indexed_db_capability = _preprocessor_branch_after(
+            self.chrome_main,
+            "if (!indexed_db_smoke_requested || !indexed_db_smoke_enabled)",
         )
         for capability in (
             preferences_capability,
             database_capability,
             local_storage_capability,
+            indexed_db_capability,
         ):
             self.assertIn(
                 "result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;", capability
@@ -867,6 +910,9 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         local_storage_capability_start = self.chrome_main.index(
             "if (!local_storage_smoke_requested || !local_storage_smoke_enabled)"
         )
+        indexed_db_capability_start = self.chrome_main.index(
+            "if (!indexed_db_smoke_requested || !indexed_db_smoke_enabled)"
+        )
         preferences_mount = self.chrome_main.index(
             "chrome::InitializeWasmProfilePreferencesStorage()"
         )
@@ -876,6 +922,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.assertLess(preferences_capability_start, preferences_mount)
         self.assertLess(database_capability_start, database_mount)
         self.assertLess(local_storage_capability_start, preferences_mount)
+        self.assertLess(indexed_db_capability_start, preferences_mount)
 
     def test_experimental_main_parts_admits_and_completes_profile_lifecycle_before_drain(
         self,

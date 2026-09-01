@@ -132,7 +132,13 @@ class M7ProfileDatabaseLockContractTest(unittest.TestCase):
         self.assertIn("WriteSqliteTokenAndVerifyAfterClose", lock_case)
         self.assertIn("WriteLevelDBTokenWithContenderAndReopen", lock_case)
         self.assertNotIn("EmitDatabaseTaskPhase", lock_case)
-        self.assertIn("closed seven-marker receipt", source_text)
+        self.assertIn(
+            'EmitMarker("LEVELDB_LOCK_CONTENDER_REJECTED")', source_text
+        )
+        self.assertIn(
+            'EmitDigestMarker("LEVELDB_LOCK_RELEASE_REOPEN_OK", token_a_digest_)',
+            source_text,
+        )
 
         start = _body_after_signature(
             source_text,

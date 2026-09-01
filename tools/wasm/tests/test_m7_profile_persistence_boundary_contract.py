@@ -28,6 +28,35 @@ _CONFIG_LIST_FIELDS = frozenset(
 _WASM_TOOLS_DIRECTORY = Path("tools/wasm")
 
 
+def _is_in_positive_macro_block(text: str, position: int, macro: str) -> bool:
+    """Returns whether |position| is under a positive |macro| branch."""
+
+    active_stack: list[bool] = []
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        if offset <= position < offset + len(line):
+            return any(active_stack)
+
+        directive = line.lstrip()
+        grants_capability = (
+            f"defined({macro})" in directive
+            and f"!defined({macro})" not in directive
+        )
+        if re.match(r"#\s*(if|ifdef|ifndef)\b", directive):
+            active_stack.append(grants_capability)
+        elif re.match(r"#\s*elif\b", directive):
+            if active_stack:
+                active_stack[-1] = grants_capability
+        elif re.match(r"#\s*else\b", directive):
+            if active_stack:
+                active_stack[-1] = False
+        elif re.match(r"#\s*endif\b", directive):
+            if active_stack:
+                active_stack.pop()
+        offset += len(line)
+    return False
+
+
 @dataclass(frozen=True)
 class _GnToken:
     value: str
@@ -602,8 +631,23 @@ class M7ProfilePersistenceBoundaryContractTest(unittest.TestCase):
         """A completed write must round-trip on the JsonPrefStore file runner."""
 
         self.assertNotIn("wasm_profile_storage", self.profile_header)
-        for text in (self.profile_header, self.profile):
-            self.assertNotIn("wasmfs_", text)
+        self.assertNotIn("wasmfs_", self.profile_header)
+        wasmfs_positions = [
+            match.start() for match in re.finditer("wasmfs_", self.profile)
+        ]
+        self.assertTrue(wasmfs_positions)
+        for position in wasmfs_positions:
+            with self.subTest(position=position):
+                self.assertTrue(
+                    _is_in_positive_macro_block(
+                        self.profile,
+                        position,
+                        "CHROME_WASM_M7_PREFERENCES_"
+                        "IMPORTANT_FILE_WRITER_PROXY_COMPLETION_TEST",
+                    ),
+                    "WasmFS proxy-completion diagnostic escaped its "
+                    "source-selected capability branch",
+                )
 
         # The normal profile remains free of the OPFS adapter. M7 receives its
         # construction-start admission from BrowserMainParts rather than
