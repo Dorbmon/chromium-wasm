@@ -282,6 +282,12 @@ class M7PreferencesImportantFileWriterProxyCompletionDomSmokeTest(unittest.TestC
         )
         self.assertEqual(runner_source.count('client.call("Page.reload"'), 1)
         self.assertEqual(runner_source.count("reload_count += 1"), 3)
+        self.assertIn("RESULT_RECEIPT_GRACE_SECONDS = 5.0", runner_source)
+        self.assertIn(
+            "deadline = time.monotonic() + args.timeout + RESULT_RECEIPT_GRACE_SECONDS",
+            runner_source,
+        )
+        self.assertIn("timeout_seconds=args.timeout", runner_source)
         for token in (
             "Sec-Fetch-Dest", "Sec-Fetch-Mode", "IMPORTANT_FILE_WRITER_EIO_MARKER",
             "FAILURE_RETIREMENT_MARKER", "validate_four_document_transition",

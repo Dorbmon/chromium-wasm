@@ -111,6 +111,13 @@ MAX_BROWSER_STDERR_LINES = 300
 MAX_TIMEOUT_MS = 300_000
 MIN_TIMEOUT_SECONDS = 20.0
 FINAL_QUIESCENCE_MS = 50
+# The page evaluates its own bounded lifecycle through |timeoutMs| and posts a
+# fully redacted receipt immediately afterwards. Keep a small runner-side
+# allowance so a terminal failure receipt emitted at that boundary is observed
+# and classified instead of being mistaken for an absent document. The shared
+# runner deadline also covers CDP setup and reload waits; this allowance does
+# not change any page-side lifecycle, reload, or persistence operation.
+RESULT_RECEIPT_GRACE_SECONDS = 5.0
 
 CAPABILITY_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -1970,7 +1977,11 @@ def main() -> int:
             daemon=True,
         )
         browser_stderr_thread.start()
-        deadline = time.monotonic() + args.timeout
+        # The page owns the actual lifecycle deadline passed through its query
+        # parameter. Keep a short runner-side allowance after that bound so a
+        # terminal page receipt remains diagnosable when it races the outer
+        # protocol deadline.
+        deadline = time.monotonic() + args.timeout + RESULT_RECEIPT_GRACE_SECONDS
         expected_page_url_prefix = url.split("?", 1)[0]
 
         stage = "connect-devtools-document-one"
