@@ -16,6 +16,7 @@
 
 namespace content {
 class BrowserContext;
+class StoragePartition;
 }
 
 namespace chrome {
@@ -32,6 +33,11 @@ struct WasmProfileLocalStorageSmokeInput {
   Mode mode = Mode::kNone;
   std::string token;
   std::string token_digest;
+
+  // The standalone LocalStorage artifacts expose their fixed stderr grammar.
+  // An embedded source-selected owner receipt can suppress that grammar and
+  // emit only its own bounded result marker after the participant completes.
+  bool emit_protocol_markers = true;
 };
 
 // Owns every profile-bound object used by the LocalStorage acceptance. The
@@ -42,6 +48,18 @@ class WasmProfileLocalStorageLifetimeParticipant {
  public:
   WasmProfileLocalStorageLifetimeParticipant(
       content::BrowserContext* browser_context,
+      base::FilePath profile_path,
+      WasmProfileLocalStorageSmokeInput input,
+      WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold);
+
+  // Uses an already-created persistent default StoragePartition instead of
+  // calling BrowserContext::GetDefaultStoragePartition(). This is limited to
+  // the source-selected shutdown probe, whose policy witness permits exactly
+  // one default-partition construction query. The caller keeps both pointers
+  // valid until the result-bearing completion runs.
+  WasmProfileLocalStorageLifetimeParticipant(
+      content::BrowserContext* browser_context,
+      content::StoragePartition* storage_partition,
       base::FilePath profile_path,
       WasmProfileLocalStorageSmokeInput input,
       WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold);

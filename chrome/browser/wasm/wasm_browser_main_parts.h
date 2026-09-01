@@ -104,7 +104,7 @@ class WasmBrowserMainParts final : public content::BrowserMainParts {
   void OnWasmProfileRendererLocalStorageSmokeComplete(bool success);
 #endif
 #if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
-  void OnWasmPersistentDefaultPartitionShutdownProbeCookieStoreClosed(
+  void OnWasmPersistentDefaultPartitionShutdownProbeSelectedOwnerReceiptsClosed(
       bool success);
 #endif
   void FinishShutdown();

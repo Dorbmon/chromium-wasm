@@ -1958,10 +1958,14 @@ config("wasm_profile_m7_persistent_default_partition_policy_probe_config") {
 }
 
 # This probe changes only WasmProfile's default StoragePartition policy method,
-# Content's selected Cookies SQLite path, and BrowserMainParts' source-selected
-# shutdown path. It has no public class layout or WebUI API.
+# Content's selected Cookies SQLite path, one direct LocalStorage close-fence
+# implementation, and BrowserMainParts' source-selected shutdown path. It has
+# no public class layout or WebUI API.
 config("wasm_profile_m7_persistent_default_partition_shutdown_probe_config") {
-  defines = [ "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1" ]
+  defines = [
+    "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1",
+    "CHROME_WASM_M7_LOCAL_STORAGE_CLOSE_FENCE_TEST=1",
+  ]
 }
 
 source_set("wasm_profile") {
@@ -2395,27 +2399,30 @@ if (enable_chromium_wasm_m7_profile_database_test ||
   }
 }
 
-# The test-only LocalStorage protocol is linked only into the dedicated
-# default-profile and aggregate artifacts. Its browser-side modes use the
-# privileged StorageArea interface. Its renderer modes add one transient
-# chrome://m7-local-storage WebContents and observe its renderer-owned
-# StorageArea through the same close-fence bridge. Content and Storage
-# independently source-select the tiny path exception under the same flag.
+# The test-only LocalStorage protocol is linked only into dedicated artifacts.
+# Its browser-side modes use the privileged StorageArea interface. The legacy
+# artifacts additionally compile one transient chrome://m7-local-storage
+# WebContents; the persistent-default shutdown probe deliberately excludes
+# that renderer/WebUI source closure and uses only the direct close fence.
 if (enable_chromium_wasm_m7_default_partition_local_storage_test ||
     enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
     enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
     enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
-    enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
+    enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test ||
+    enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
   source_set("wasm_profile_local_storage_smoke") {
-    public = [
-      "wasm_profile_local_storage_smoke.h",
-      "wasm_profile_renderer_local_storage_ui.h",
-    ]
+    public = [ "wasm_profile_local_storage_smoke.h" ]
 
-    sources = [
-      "wasm_profile_local_storage_smoke.cc",
-      "wasm_profile_renderer_local_storage_ui.cc",
-    ]
+    sources = [ "wasm_profile_local_storage_smoke.cc" ]
+
+    if (enable_chromium_wasm_m7_default_partition_local_storage_test ||
+        enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
+        enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
+        enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
+        enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
+      public += [ "wasm_profile_renderer_local_storage_ui.h" ]
+      sources += [ "wasm_profile_renderer_local_storage_ui.cc" ]
+    }
 
     if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
       defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
@@ -2444,6 +2451,11 @@ if (enable_chromium_wasm_m7_default_partition_local_storage_test ||
       ]
       public_configs = [
         ":wasm_profile_m7_bookmark_cookie_history_database_local_storage_smoke_config",
+      ]
+    }
+    if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
+      configs += [
+        ":wasm_profile_m7_persistent_default_partition_shutdown_probe_config",
       ]
     }
 
@@ -2565,10 +2577,10 @@ if (enable_chromium_wasm_m7_persistent_default_partition_policy_probe) {
 }
 
 # This source-selected probe intentionally creates Chromium's real persistent
-# default StoragePartition and materializes only its Cookies SQLite backend.
-# It requires that store's write/flush/SQLite-row-readback/close receipts
-# before the synchronous map drop; the caller always chooses V4 failure
-# retirement rather than a clean drain.
+# default StoragePartition and materializes one direct LocalStorage LevelDB
+# participant followed by its Cookies SQLite backend. It requires both selected
+# owner receipts before the synchronous map drop; the caller always chooses V4
+# failure retirement rather than a clean drain.
 if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
   source_set("wasm_profile_persistent_default_partition_shutdown_probe") {
     public = [ "wasm_profile_persistent_default_partition_shutdown_probe.h" ]
@@ -2581,7 +2593,10 @@ if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
     ]
 
     deps = [
+      ":wasm_profile_local_storage_smoke",
+      ":wasm_profile_storage",
       "//base",
+      "//crypto",
       "//mojo/public/cpp/bindings",
       "//net",
       "//services/network/public/mojom",

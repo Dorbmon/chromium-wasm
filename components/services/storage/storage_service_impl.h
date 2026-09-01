@@ -5,6 +5,15 @@
 #ifndef COMPONENTS_SERVICES_STORAGE_STORAGE_SERVICE_IMPL_H_
 #define COMPONENTS_SERVICES_STORAGE_STORAGE_SERVICE_IMPL_H_
 
+// The persistent-default shutdown probe uses this private close-fence API to
+// obtain one direct LocalStorage receipt. This compatibility alias is limited
+// to StorageService's implementation closure; the public shutdown artifact
+// does not acquire the legacy LocalStorage artifact's renderer/WebUI modes.
+#if defined(CHROME_WASM_M7_LOCAL_STORAGE_CLOSE_FENCE_TEST) && \
+    !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+#define CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST 1
+#endif
+
 #include <cstdint>
 #include <map>
 #include <memory>

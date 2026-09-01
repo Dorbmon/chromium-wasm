@@ -3,9 +3,10 @@
 // found in the LICENSE file.
 
 // A one-document shutdown probe. Chromium constructs the real persistent
-// default StoragePartition, receives one selected CookieManager write/flush,
-// network-owned SQLite row-readback, and backend-close receipt, then receives
-// its real destruction notification return before its
+// default StoragePartition, receives one direct LocalStorage map-update/close
+// receipt followed by one selected CookieManager write/flush, network-owned
+// SQLite row-readback, and backend-close receipt, then receives its real
+// destruction notification return before its
 // StoragePartitionImplMap is absent, fences preferences, and deliberately
 // selects sealed/lease-retained failure retirement. This host verifies only
 // fixed stderr receipts and the clean nonzero process-exit acknowledgement. It
@@ -16,7 +17,8 @@ const HOST_PROTOCOL = 1;
 const CASE = "chrome_persistent_default_partition_shutdown_probe_m7";
 const SCOPE =
     "one-fresh-source-selected-chrome-wasm-persistent-default-partition-" +
-    "cookie-write-flush-sqlite-row-readback-close-destruction-notification-" +
+    "local-storage-map-update-close-cookie-write-flush-sqlite-row-readback-" +
+    "close-destruction-notification-" +
     "return-map-fail-closed-retirement-" +
     "observation-only-no-durable-profile-claim";
 const PRODUCT_MODULE_NAME =
@@ -30,6 +32,9 @@ const SHUTDOWN_FAIL_PREFIX = SHUTDOWN_MARKER_PREFIX + "FAIL stage=";
 const FAILURE_RETIREMENT_PREFIX = "CHROMIUM_WASM_M7_PROFILE_FAILURE_RETIREMENT:";
 const DEFAULT_PARTITION_CREATED_MARKER =
     SHUTDOWN_MARKER_PREFIX + "DEFAULT_PARTITION_CREATED";
+const PERSISTENT_LOCAL_STORAGE_ON_DISK_MAP_UPDATE_AND_CLOSE_OK_MARKER =
+    SHUTDOWN_MARKER_PREFIX +
+    "PERSISTENT_LOCAL_STORAGE_ON_DISK_MAP_UPDATE_AND_CLOSE_OK";
 const PERSISTENT_COOKIE_WRITE_ACCEPTED_MARKER =
     SHUTDOWN_MARKER_PREFIX + "PERSISTENT_COOKIE_WRITE_ACCEPTED";
 const PERSISTENT_COOKIE_STORE_FLUSH_ACKNOWLEDGED_MARKER =
@@ -55,6 +60,7 @@ const FAIL_CLOSED_RETIREMENT_MARKER =
     SHUTDOWN_MARKER_PREFIX + "FAIL_CLOSED_RETIREMENT";
 const EXPECTED_MARKERS = Object.freeze([
   DEFAULT_PARTITION_CREATED_MARKER,
+  PERSISTENT_LOCAL_STORAGE_ON_DISK_MAP_UPDATE_AND_CLOSE_OK_MARKER,
   PERSISTENT_COOKIE_WRITE_ACCEPTED_MARKER,
   PERSISTENT_COOKIE_STORE_FLUSH_ACKNOWLEDGED_MARKER,
   PERSISTENT_COOKIE_SQLITE_ROW_READBACK_OK_MARKER,
@@ -87,6 +93,7 @@ const RESULT_FIELDS = Object.freeze([
   "persistentDefaultPartitionCookieStoreCloseReceiptProven",
   "persistentDefaultPartitionCookieStoreFlushAcknowledgedProven",
   "persistentDefaultPartitionCookieWriteAcceptedProven",
+  "persistentDefaultPartitionLocalStorageMapUpdateAndCloseReceiptProven",
   "preferencesFenceProven",
   "profilePersistenceProven", "profileStorageLeaseReleasedProven", "protocol",
   "quiescence", "run", "scope", "sealedLeaseRetainedReceiptProven",
@@ -673,36 +680,40 @@ class PersistentDefaultPartitionShutdownProbeHost {
       actualPersistentDefaultPartitionCreatedProven:
           lifecycleComplete &&
           this.run.markers[0] === DEFAULT_PARTITION_CREATED_MARKER,
+      persistentDefaultPartitionLocalStorageMapUpdateAndCloseReceiptProven:
+          lifecycleComplete &&
+          this.run.markers[1] ===
+              PERSISTENT_LOCAL_STORAGE_ON_DISK_MAP_UPDATE_AND_CLOSE_OK_MARKER,
       persistentDefaultPartitionCookieWriteAcceptedProven:
           lifecycleComplete &&
-          this.run.markers[1] === PERSISTENT_COOKIE_WRITE_ACCEPTED_MARKER,
+          this.run.markers[2] === PERSISTENT_COOKIE_WRITE_ACCEPTED_MARKER,
       persistentDefaultPartitionCookieStoreFlushAcknowledgedProven:
           lifecycleComplete &&
-          this.run.markers[2] ===
+          this.run.markers[3] ===
               PERSISTENT_COOKIE_STORE_FLUSH_ACKNOWLEDGED_MARKER,
       persistentDefaultPartitionCookieSQLiteRowReadbackProven:
           lifecycleComplete &&
-          this.run.markers[3] === PERSISTENT_COOKIE_SQLITE_ROW_READBACK_OK_MARKER,
+          this.run.markers[4] === PERSISTENT_COOKIE_SQLITE_ROW_READBACK_OK_MARKER,
       persistentDefaultPartitionCookieStoreCloseReceiptProven:
           lifecycleComplete &&
-          this.run.markers[4] === PERSISTENT_COOKIE_STORE_CLOSED_MARKER,
+          this.run.markers[5] === PERSISTENT_COOKIE_STORE_CLOSED_MARKER,
       creationSealProven:
           lifecycleComplete &&
-          this.run.markers[5] === PARTITION_CREATION_SEALED_MARKER,
+          this.run.markers[6] === PARTITION_CREATION_SEALED_MARKER,
       partitionDestroyNotificationDispatchedProven:
           lifecycleComplete &&
-          this.run.markers[7] === PARTITION_DESTROY_NOTIFICATION_DISPATCHED_MARKER,
+          this.run.markers[8] === PARTITION_DESTROY_NOTIFICATION_DISPATCHED_MARKER,
       partitionMapDroppedProven:
           lifecycleComplete &&
-          this.run.markers[8] === PARTITION_MAP_DROPPED_MARKER,
+          this.run.markers[9] === PARTITION_MAP_DROPPED_MARKER,
       preferencesFenceProven:
-          lifecycleComplete && this.run.markers[9] === PREFERENCES_FENCE_OK_MARKER,
+          lifecycleComplete && this.run.markers[10] === PREFERENCES_FENCE_OK_MARKER,
       sealedLeaseRetainedReceiptProven:
           lifecycleComplete &&
-          this.run.markers[10] === SEALED_LEASE_RETAINED_MARKER,
+          this.run.markers[11] === SEALED_LEASE_RETAINED_MARKER,
       failClosedRetirementProven:
           lifecycleComplete &&
-          this.run.markers[11] === FAIL_CLOSED_RETIREMENT_MARKER,
+          this.run.markers[12] === FAIL_CLOSED_RETIREMENT_MARKER,
       structuralShutdownWitnessProven: lifecycleComplete,
       nonzeroProcessExitAndAckProven: lifecycleComplete,
       aggregatePartitionCloseProven: false,
@@ -727,7 +738,8 @@ class PersistentDefaultPartitionShutdownProbeHost {
         leaseReleasedMarkerObserved: this.run.leaseReleasedMarkerObserved,
         markerCount: this.run.markers.length,
         markerSequenceAccepted: this.run.markerSequenceAccepted,
-        markerSource: "stderr-only-fixed-cookie-and-structural-shutdown-grammar",
+        markerSource:
+            "stderr-only-fixed-selected-local-storage-and-cookie-shutdown-grammar",
         markers: this.run.markers.slice(),
         noFailMarkerObserved: this.run.noFailMarkerObserved,
         nonzeroProcessExitAndAckReceived: lifecycleComplete,
@@ -863,6 +875,8 @@ export function validateChromeWasmPersistentDefaultPartitionShutdownProbeResult(
       result.exactEmptyProbeSwitchPassed !== true ||
       result.freshSourceSelectedShutdownArtifactProven !== true ||
       result.actualPersistentDefaultPartitionCreatedProven !== true ||
+      result.persistentDefaultPartitionLocalStorageMapUpdateAndCloseReceiptProven !==
+          true ||
       result.persistentDefaultPartitionCookieWriteAcceptedProven !== true ||
       result.persistentDefaultPartitionCookieStoreFlushAcknowledgedProven !== true ||
       result.persistentDefaultPartitionCookieSQLiteRowReadbackProven !== true ||
@@ -922,7 +936,7 @@ export function validateChromeWasmPersistentDefaultPartitionShutdownProbeResult(
       run.markerCount !== EXPECTED_MARKERS.length ||
       run.markerSequenceAccepted !== true ||
       run.markerSource !==
-          "stderr-only-fixed-cookie-and-structural-shutdown-grammar" ||
+          "stderr-only-fixed-selected-local-storage-and-cookie-shutdown-grammar" ||
       JSON.stringify(run.markers) !== JSON.stringify(EXPECTED_MARKERS) ||
       run.noFailMarkerObserved !== true ||
       run.nonzeroProcessExitAndAckReceived !== true || run.onExitCount !== 1 ||

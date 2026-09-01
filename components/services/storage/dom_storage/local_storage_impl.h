@@ -5,6 +5,14 @@
 #ifndef COMPONENTS_SERVICES_STORAGE_DOM_STORAGE_LOCAL_STORAGE_IMPL_H_
 #define COMPONENTS_SERVICES_STORAGE_DOM_STORAGE_LOCAL_STORAGE_IMPL_H_
 
+// See storage_service_impl.h. This source-selected compatibility alias keeps
+// the private close-fence bookkeeping in lockstep with StorageServiceImpl for
+// the direct persistent-default shutdown receipt only.
+#if defined(CHROME_WASM_M7_LOCAL_STORAGE_CLOSE_FENCE_TEST) && \
+    !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+#define CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST 1
+#endif
+
 #include <stdint.h>
 
 #include <map>

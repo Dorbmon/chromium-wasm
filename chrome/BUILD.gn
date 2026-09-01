@@ -722,12 +722,16 @@ if (is_wasm && enable_chromium_wasm_chrome) {
     }
     if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
       # This witness constructs one real persistent default StoragePartition,
-      # receives one Cookies SQLite write/flush/row-readback/backend-close
-      # receipt, seals future partition creation during teardown, observes its
-      # actual map reset, and retains the V4 OPFS lease fail-closed.
+      # receives one direct LocalStorage map-update/close receipt followed by
+      # one Cookies SQLite write/flush/row-readback/backend-close receipt,
+      # seals future partition creation during teardown, observes its actual
+      # map reset, and retains the V4 OPFS lease fail-closed.
       output_name =
           "chrome_wasm_m7_persistent_default_partition_shutdown_probe"
-      defines = [ "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1" ]
+      defines = [
+        "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1",
+        "CHROME_WASM_M7_LOCAL_STORAGE_CLOSE_FENCE_TEST=1",
+      ]
     }
     if (enable_chromium_wasm_m7_profile_preferences_test ||
         enable_chromium_wasm_m7_profile_database_test ||

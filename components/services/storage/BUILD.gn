@@ -30,6 +30,14 @@ config("wasm_m7_profile_bookmark_cookie_history_database_local_storage_test") {
   ]
 }
 
+# The persistent-default shutdown probe reuses the narrow LocalStorage
+# close-fence implementation to obtain one real on-disk commit and database
+# close receipt. Keep its source selection distinct from the standalone
+# LocalStorage artifacts: it never enables ordinary profile persistence.
+config("wasm_m7_persistent_default_partition_shutdown_probe") {
+  defines = [ "CHROME_WASM_M7_LOCAL_STORAGE_CLOSE_FENCE_TEST=1" ]
+}
+
 source_set("storage") {
   sources = [
     "dom_storage/async_dom_storage_database.cc",
@@ -168,7 +176,8 @@ source_set("storage") {
       enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
       enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
       enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
-      enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
+      enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test ||
+      enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
     # This config also reaches all consumers of storage_service_impl.h so the
     # source-selected test interface cannot create a mismatched C++ class
     # layout in a static Wasm link.
@@ -198,6 +207,20 @@ source_set("storage") {
       public_configs = [
         ":wasm_m7_profile_bookmark_cookie_history_database_local_storage_test",
       ]
+    }
+    if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
+      configs += [ ":wasm_m7_persistent_default_partition_shutdown_probe" ]
+      if (enable_chromium_wasm_m7_default_partition_local_storage_test ||
+          enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
+          enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
+          enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
+          enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
+        public_configs +=
+            [ ":wasm_m7_persistent_default_partition_shutdown_probe" ]
+      } else {
+        public_configs =
+            [ ":wasm_m7_persistent_default_partition_shutdown_probe" ]
+      }
     }
     public_deps += [
       "//components/services/storage/public/mojom:wasm_local_storage_test_api",

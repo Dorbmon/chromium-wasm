@@ -24,8 +24,10 @@
 #include "chrome/browser/wasm/wasm_profile_local_storage_close_receipt_lifetime.h"
 #include "components/services/storage/public/mojom/local_storage_control.mojom.h"
 #include "components/services/storage/public/mojom/wasm_local_storage_test_api.mojom.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/dom_storage_context.h"
 #include "content/public/browser/storage_partition.h"
+#include "content/public/browser/storage_partition_config.h"
 #include "content/public/browser/wasm_dom_storage_test_support.h"
 #include "crypto/hash.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -43,7 +45,6 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "content/public/browser/browser_context.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
@@ -280,12 +281,15 @@ class WasmProfileLocalStorageLifetimeParticipant::State final
 {
  public:
   State(content::BrowserContext* browser_context,
+        content::StoragePartition* storage_partition,
         base::FilePath profile_path,
         WasmProfileLocalStorageSmokeInput input,
         WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
         base::OnceClosure quarantine_callback)
-      : mode_(input.mode),
+      : emit_protocol_markers_(input.emit_protocol_markers),
+        mode_(input.mode),
         browser_context_(browser_context),
+        storage_partition_(storage_partition),
         close_receipt_lifetime_(std::move(profile_io_hold),
                                 std::move(quarantine_callback)),
         token_(std::move(input.token)),
@@ -316,8 +320,7 @@ class WasmProfileLocalStorageLifetimeParticipant::State final
       return false;
     }
     if (!browser_context_ || profile_path_.empty() || !completion) {
-      GetWasmProfileLocalStorageProtocolState().ReportFailure(
-          WasmProfileLocalStorageSmokeFailureStage::kProfile);
+      ReportProtocolFailure(WasmProfileLocalStorageSmokeFailureStage::kProfile);
       CleanupProfileBoundResources();
       (void)close_receipt_lifetime_.RejectBeforeStart();
       return false;
@@ -326,10 +329,28 @@ class WasmProfileLocalStorageLifetimeParticipant::State final
       return false;
     }
     if (renderer_enabled()) {
+      if (storage_partition_) {
+        ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kProfile);
+        return true;
+      }
       return StartRenderer();
     }
-    content::StoragePartition* storage_partition =
-        browser_context_->GetDefaultStoragePartition();
+    content::StoragePartition* storage_partition = storage_partition_;
+    if (storage_partition) {
+      const content::StoragePartitionConfig& config =
+          storage_partition->GetConfig();
+      // A caller that supplies the partition has already performed the one
+      // allowed default-partition policy query. Re-querying it here would
+      // obscure that source-selected boundary, so validate the supplied
+      // persistent default instead.
+      if (!config.is_default() || config.in_memory() ||
+          storage_partition->GetPath() != profile_path_) {
+        ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kProfile);
+        return true;
+      }
+    } else {
+      storage_partition = browser_context_->GetDefaultStoragePartition();
+    }
     if (!storage_partition) {
       ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kStorage);
       return true;
@@ -501,6 +522,7 @@ class WasmProfileLocalStorageLifetimeParticipant::State final
     }
     test_api_.reset();
     dom_storage_context_ = nullptr;
+    storage_partition_ = nullptr;
     browser_context_ = nullptr;
     profile_path_.clear();
     storage_key_.reset();
@@ -514,7 +536,7 @@ class WasmProfileLocalStorageLifetimeParticipant::State final
     failure_reported_ = true;
     close_succeeded_ = false;
     ClearRawToken();
-    GetWasmProfileLocalStorageProtocolState().ReportFailure(stage);
+    ReportProtocolFailure(stage);
     close_receipt_lifetime_.FailBeforeExactCloseReceipt(base::BindOnce(
         &WasmProfileLocalStorageLifetimeParticipant::State::
             CleanupProfileBoundResources,
@@ -893,12 +915,24 @@ class WasmProfileLocalStorageLifetimeParticipant::State final
     token_bytes_.clear();
   }
 
+  void ReportProtocolFailure(WasmProfileLocalStorageSmokeFailureStage stage) {
+    if (emit_protocol_markers_) {
+      GetWasmProfileLocalStorageProtocolState().ReportFailure(stage);
+    }
+  }
+
   void EmitMarker(const char* marker) {
+    if (!emit_protocol_markers_) {
+      return;
+    }
     std::fprintf(stderr, "%s%s\n", kMarkerPrefix, marker);
     std::fflush(stderr);
   }
 
   void EmitDigestMarker(const char* marker) {
+    if (!emit_protocol_markers_) {
+      return;
+    }
     std::fprintf(stderr, "%s%s sha256=%s\n", kMarkerPrefix, marker,
                  token_digest_.c_str());
     std::fflush(stderr);
@@ -908,6 +942,7 @@ class WasmProfileLocalStorageLifetimeParticipant::State final
   bool close_succeeded_ = false;
   bool failure_reported_ = false;
   bool profile_bound_cleanup_completed_ = false;
+  bool emit_protocol_markers_ = true;
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -918,6 +953,7 @@ class WasmProfileLocalStorageLifetimeParticipant::State final
 #endif
   SmokeMode mode_ = SmokeMode::kNone;
   raw_ptr<content::BrowserContext> browser_context_ = nullptr;
+  raw_ptr<content::StoragePartition> storage_partition_ = nullptr;
   WasmProfileLocalStorageCloseReceiptLifetime close_receipt_lifetime_;
   std::string token_;
   std::string token_digest_;
@@ -948,8 +984,25 @@ WasmProfileLocalStorageLifetimeParticipant::
         WasmProfileLocalStorageSmokeInput input,
         WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold) {
   state_ = std::make_unique<State>(
-      browser_context, std::move(profile_path), std::move(input),
+      browser_context, /*storage_partition=*/nullptr, std::move(profile_path),
+      std::move(input),
       std::move(profile_io_hold),
+      base::BindOnce(
+          &WasmProfileLocalStorageLifetimeParticipant::
+              OnOperationRequiresQuarantine,
+          weak_ptr_factory_.GetWeakPtr()));
+}
+
+WasmProfileLocalStorageLifetimeParticipant::
+    WasmProfileLocalStorageLifetimeParticipant(
+        content::BrowserContext* browser_context,
+        content::StoragePartition* storage_partition,
+        base::FilePath profile_path,
+        WasmProfileLocalStorageSmokeInput input,
+        WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold) {
+  state_ = std::make_unique<State>(
+      browser_context, storage_partition, std::move(profile_path),
+      std::move(input), std::move(profile_io_hold),
       base::BindOnce(
           &WasmProfileLocalStorageLifetimeParticipant::
               OnOperationRequiresQuarantine,

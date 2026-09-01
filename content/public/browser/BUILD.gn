@@ -40,7 +40,10 @@ config("wasm_m7_profile_bookmark_cookie_history_database_local_storage_test") {
 }
 
 config("wasm_m7_persistent_default_partition_shutdown_probe") {
-  defines = [ "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1" ]
+  defines = [
+    "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1",
+    "CHROME_WASM_M7_LOCAL_STORAGE_CLOSE_FENCE_TEST=1",
+  ]
 }
 
 # See //content/BUILD.gn for how this works.
@@ -696,7 +699,8 @@ source_set("browser_sources") {
       enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
       enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
       enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
-      enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
+      enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test ||
+      enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
     # Export the source-selected public bridge with its generated test API so
     # the dedicated Chrome helper can stay on StoragePartition's public
     # DOMStorageContext boundary.

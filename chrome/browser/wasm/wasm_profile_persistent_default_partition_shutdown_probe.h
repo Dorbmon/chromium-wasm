@@ -17,9 +17,10 @@ class BrowserContext;
 namespace chrome {
 
 // Fixed failure grammar for the source-selected shutdown probe. Its narrow
-// positive observations are one persistent default StoragePartition's
-// CookieManager write/flush/SQLite-row-readback/close receipts and the later
-// map-drop boundary.
+// positive observations are one persistent default StoragePartition's direct
+// LocalStorage map-update/close receipt, CookieManager
+// write/flush/SQLite-row-readback/close receipts, and the later map-drop
+// boundary.
 // It deliberately does not claim an aggregate partition close, a durable
 // profile flush, recovery, or fresh-document persistence.
 enum class WasmPersistentDefaultPartitionShutdownProbeFailureStage {
@@ -28,6 +29,7 @@ enum class WasmPersistentDefaultPartitionShutdownProbeFailureStage {
   kProfile,
   kConfiguration,
   kPartition,
+  kLocalStorage,
   kCookie,
   kNotification,
   kMap,
@@ -76,6 +78,22 @@ bool IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(
     bool cookie_sqlite_row_readback_succeeded,
     bool cookie_store_close_acknowledged);
 
+// This probe has receipts for exactly two selected persistent owners: the
+// LocalStorage LevelDB close-fence participant and CookieManager's SQLite
+// store. The LocalStorage result means only an on-disk LevelDB map-update
+// snapshot/commit result followed by exact LocalStorage destruction and a
+// database-sequence FIFO receipt; it is not an fsync or physical-crash
+// durability result. Their conjunction deliberately does not classify an
+// aggregate StoragePartition close, a durable profile flush, or profile
+// persistence.
+bool IsWasmPersistentDefaultPartitionSelectedOwnerReceiptWitness(
+    bool local_storage_receipt_started,
+    bool local_storage_on_disk_commit_and_close_acknowledged,
+    bool cookie_write_accepted,
+    bool cookie_store_flush_acknowledged,
+    bool cookie_sqlite_row_readback_succeeded,
+    bool cookie_store_close_acknowledged);
+
 bool HasWasmPersistentDefaultPartitionShutdownProbeArguments();
 bool EnableWasmPersistentDefaultPartitionShutdownProbe();
 bool IsWasmPersistentDefaultPartitionShutdownProbeEnabled();
@@ -87,18 +105,23 @@ bool IsWasmPersistentDefaultPartitionShutdownProbeEnabled();
 void RecordWasmPersistentDefaultPartitionShutdownProbePolicyQuery();
 
 // Creates the actual default StoragePartition after verifying that
-// CreateDefault() selected a non-memory configuration. It then writes one
-// persistent test cookie through that partition's cloned CookieManager,
+// CreateDefault() selected a non-memory configuration. It first drives one
+// direct LocalStorage write through the existing selected close-fence
+// participant, which requires an on-disk LevelDB map-update snapshot/commit
+// result and the same LocalStorage instance's database-sequence FIFO close
+// receipt. It then writes one persistent test cookie through the partition's
+// cloned CookieManager,
 // awaits the backing-store flush acknowledgement, performs a network-owned
 // matching SQLite logical-row readback, and receives the test-only
 // cookie-store close completion receipt before invoking
-// |on_cookie_store_closed|. The helper retains the profile-I/O hold through
-// the later synchronous partition-map drop. Callers must still choose failure
-// retirement rather than a clean V4 handoff.
+// |on_selected_owner_receipts_closed|. The helper retains its primary
+// profile-I/O hold through the later synchronous partition-map drop. These
+// remain two selected receipts only; callers must choose failure retirement
+// rather than a clean V4 handoff.
 bool RunWasmPersistentDefaultPartitionShutdownProbe(
     content::BrowserContext* browser_context,
     WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
-    base::OnceCallback<void(bool success)> on_cookie_store_closed);
+    base::OnceCallback<void(bool success)> on_selected_owner_receipts_closed);
 
 // Seals BrowserContext's lazy partition-creation entry point before profile
 // teardown. It is deliberately separate from the later map-drop observation:

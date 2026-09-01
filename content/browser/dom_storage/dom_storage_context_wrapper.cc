@@ -69,11 +69,17 @@ std::optional<base::FilePath> GetLocalStoragePath(
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // The shutdown probe itself constructs a non-memory default partition. Its
+  // LocalStorage owner must use that real profile path, while the probe keeps
+  // every broader StoragePartition persistence claim fail closed.
+#else
   // The M7 LocalStorage acceptance intentionally leaves the partition itself
   // in memory. It supplies the browser-context path only to LocalStorage so
   // no other partition-owned store gains an implicit persistence claim. The
   // source-selected test uses the default partition, whose relative path is
   // empty and therefore exactly identifies the browser profile directory.
+#endif
   if (!partition->GetConfig().is_default()) {
     return std::nullopt;
   }

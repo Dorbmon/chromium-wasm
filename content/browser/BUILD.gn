@@ -2872,7 +2872,8 @@ source_set("browser") {
       enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
       enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
       enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
-      enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
+      enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test ||
+      enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
     # This source-selected bridge is the only Content-side admission for the
     # M7 default-partition LocalStorage close receipt. It must not leak into
     # ordinary Wasm Chrome or another platform's DOM-storage graph.
@@ -2909,7 +2910,10 @@ source_set("browser") {
     # Keep this inline destruction-notification witness physically absent from
     # ordinary Content and ordinary Wasm Chrome. The executable's define does
     # not propagate back into this source set.
-    defines += [ "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1" ]
+    defines += [
+      "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1",
+      "CHROME_WASM_M7_LOCAL_STORAGE_CLOSE_FENCE_TEST=1",
+    ]
     sources += [
       "../public/browser/wasm_storage_partition_shutdown_test_support.h",
       "wasm_storage_partition_shutdown_test_support.cc",

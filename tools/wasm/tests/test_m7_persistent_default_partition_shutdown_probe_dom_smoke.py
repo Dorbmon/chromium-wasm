@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Focused contracts for the CookieManager/default-partition shutdown smoke."""
+"""Focused contracts for selected-owner/default-partition shutdown smoke."""
 
 from __future__ import annotations
 
@@ -68,6 +68,7 @@ def passing_result(
         "exactEmptyProbeSwitchPassed": True,
         "freshSourceSelectedShutdownArtifactProven": True,
         "actualPersistentDefaultPartitionCreatedProven": True,
+        "persistentDefaultPartitionLocalStorageMapUpdateAndCloseReceiptProven": True,
         "persistentDefaultPartitionCookieWriteAcceptedProven": True,
         "persistentDefaultPartitionCookieStoreFlushAcknowledgedProven": True,
         "persistentDefaultPartitionCookieSQLiteRowReadbackProven": True,
@@ -103,7 +104,7 @@ def passing_result(
             "markerCount": len(smoke.EXPECTED_MARKERS),
             "markerSequenceAccepted": True,
             "markerSource": (
-                "stderr-only-fixed-cookie-and-structural-shutdown-grammar"
+                "stderr-only-fixed-selected-local-storage-and-cookie-shutdown-grammar"
             ),
             "markers": list(smoke.EXPECTED_MARKERS),
             "noFailMarkerObserved": True,
@@ -210,6 +211,8 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
             (
                 smoke.M7_SHUTDOWN_MARKER_PREFIX + "DEFAULT_PARTITION_CREATED",
                 smoke.M7_SHUTDOWN_MARKER_PREFIX
+                + "PERSISTENT_LOCAL_STORAGE_ON_DISK_MAP_UPDATE_AND_CLOSE_OK",
+                smoke.M7_SHUTDOWN_MARKER_PREFIX
                 + "PERSISTENT_COOKIE_WRITE_ACCEPTED",
                 smoke.M7_SHUTDOWN_MARKER_PREFIX
                 + "PERSISTENT_COOKIE_STORE_FLUSH_ACKNOWLEDGED",
@@ -228,7 +231,7 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
             ),
         )
 
-    def test_accepts_only_the_fixed_cookie_and_structural_shutdown_receipt(
+    def test_accepts_only_the_fixed_selected_owner_and_structural_shutdown_receipt(
         self,
     ) -> None:
         validate(passing_result())
@@ -256,6 +259,7 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
             validate(missing_notification)
 
         for field in (
+            "persistentDefaultPartitionLocalStorageMapUpdateAndCloseReceiptProven",
             "persistentDefaultPartitionCookieWriteAcceptedProven",
             "persistentDefaultPartitionCookieStoreFlushAcknowledgedProven",
             "persistentDefaultPartitionCookieSQLiteRowReadbackProven",
@@ -276,6 +280,16 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
         run["markerCount"] = len(markers)
         with self.assertRaises(M0Error):
             validate(missing_cookie_marker)
+
+        missing_local_storage_marker = passing_result()
+        run = missing_local_storage_marker["run"]
+        assert isinstance(run, dict)
+        markers = run["markers"]
+        assert isinstance(markers, list)
+        markers.pop(1)
+        run["markerCount"] = len(markers)
+        with self.assertRaises(M0Error):
+            validate(missing_local_storage_marker)
 
         lease_released = passing_result()
         run = lease_released["run"]

@@ -658,10 +658,10 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
 #if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
   // This artifact admits exactly one real default StoragePartition after the
   // V4 Default mount and profile construction. It owns no Browser, WebUI, or
-  // WebContents. It starts profile teardown only after one persistent
-  // CookieManager has acknowledged a write, flush, SQLite row readback, and
-  // backend close; it then always retires the backend fail-closed after the
-  // map-drop boundary.
+  // WebContents. It starts profile teardown only after one direct
+  // LocalStorage map-update/close receipt and one persistent CookieManager
+  // write, flush, SQLite row readback, and backend-close receipt; it then
+  // always retires the backend fail-closed after the map-drop boundary.
   if (!chrome::IsWasmPersistentDefaultPartitionShutdownProbeEnabled()) {
     chrome::ReportWasmPersistentDefaultPartitionShutdownProbeFailure(
         chrome::WasmPersistentDefaultPartitionShutdownProbeFailureStage::
@@ -682,10 +682,10 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
           profile_.get(), std::move(*shutdown_probe_profile_io_hold),
           base::BindOnce(
               &WasmBrowserMainParts::
-                  OnWasmPersistentDefaultPartitionShutdownProbeCookieStoreClosed,
+                  OnWasmPersistentDefaultPartitionShutdownProbeSelectedOwnerReceiptsClosed,
               weak_ptr_factory_.GetWeakPtr()))) {
-    LOG(ERROR) << "chrome_wasm persistent default StoragePartition cookie "
-                  "shutdown probe failed";
+    LOG(ERROR) << "chrome_wasm persistent default StoragePartition selected "
+                  "owner shutdown probe failed";
     RequestShutdown();
   }
   return content::RESULT_CODE_NORMAL_EXIT;
@@ -1403,13 +1403,13 @@ void WasmBrowserMainParts::RequestShutdown() {
 
 #if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
 void WasmBrowserMainParts::
-    OnWasmPersistentDefaultPartitionShutdownProbeCookieStoreClosed(
+    OnWasmPersistentDefaultPartitionShutdownProbeSelectedOwnerReceiptsClosed(
         bool success) {
   if (!success) {
-    LOG(ERROR) << "chrome_wasm persistent default CookieManager close "
-                  "receipt failed";
+    LOG(ERROR) << "chrome_wasm persistent default LocalStorage/Cookie "
+                  "selected-owner receipt failed";
   }
-  // The probe posts this handoff after the CookieManager callback has
+  // The probe posts this handoff after both selected owner callbacks have
   // returned. From this point ordinary profile teardown can observe the real
   // default partition notification and map-drop boundaries.
   RequestShutdown();
@@ -2420,11 +2420,12 @@ void WasmBrowserMainParts::FinishShutdown() {
     // its file sequence. Do not use a nested RunLoop or block this sequence.
 #if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
     // Seal the real BrowserContext map before any shutdown notification can
-    // run a late partition accessor. The probe has already received its one
-    // CookieManager SQLite-row-readback/close receipt and retains its explicit
-    // admission from construction through the later synchronous map-drop
-    // boundary. A later re-entry sees the already-pending/completed fence and
-    // does not duplicate either one-shot observation.
+    // run a late partition accessor. The probe has already received one direct
+    // LocalStorage map-update/close receipt and one CookieManager
+    // SQLite-row-readback/close receipt, and retains its explicit admission
+    // from construction through the later synchronous map-drop boundary. A
+    // later re-entry sees the already-pending/completed fence and does not
+    // duplicate either one-shot observation.
     if (!profile_->IsPrefsShutdownFencePending() &&
         !profile_->HasPrefsShutdownFenceCompleted()) {
       chrome::NotifyWasmPersistentDefaultPartitionShutdownProbeCreationSealed(

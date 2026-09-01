@@ -43,6 +43,7 @@ _M7_STORAGE_MACROS = (
     "CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST",
     "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE",
     "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE",
+    "CHROME_WASM_M7_LOCAL_STORAGE_CLOSE_FENCE_TEST",
 )
 _M7_STORAGE_GN_FLAGS = (
     "enable_chromium_wasm_m7_profile_preferences_test",
@@ -236,6 +237,15 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.shutdown_probe_gni = source(
             "chrome/browser/wasm/"
             "wasm_profile_persistent_default_partition_shutdown_probe.gni"
+        )
+        self.local_storage_smoke = source(
+            "chrome/browser/wasm/wasm_profile_local_storage_smoke.cc"
+        )
+        self.local_storage_smoke_header = source(
+            "chrome/browser/wasm/wasm_profile_local_storage_smoke.h"
+        )
+        self.dom_storage_test_support_header = source(
+            "content/public/browser/wasm_dom_storage_test_support.h"
         )
         self.wasm_gni = source("build/config/wasm.gni")
         self.browser_context_header = source(
@@ -1241,12 +1251,80 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
 
         for token in (
             "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1",
+            "CHROME_WASM_M7_LOCAL_STORAGE_CLOSE_FENCE_TEST=1",
             'source_set("wasm_profile_persistent_default_partition_shutdown_probe")',
+            '":wasm_profile_local_storage_smoke",',
             'test("wasm_profile_persistent_default_partition_shutdown_probe_unittests")',
             '":wasm_profile_persistent_default_partition_shutdown_probe",',
         ):
             with self.subTest(token=token):
                 self.assertIn(token, self.wasm_browser_build)
+
+        # The shutdown artifact borrows only the browser-side close fence. Its
+        # target does not compile the legacy renderer/WebUI source closure.
+        local_storage_target_position = self.wasm_browser_build.index(
+            'source_set("wasm_profile_local_storage_smoke")'
+        )
+        local_storage_outer_selector_start = self.wasm_browser_build.rfind(
+            "if (enable_chromium_wasm_m7_default_partition_local_storage_test ||",
+            0,
+            local_storage_target_position,
+        )
+        self.assertNotEqual(-1, local_storage_outer_selector_start)
+        local_storage_outer_selector = self.wasm_browser_build[
+            local_storage_outer_selector_start : self.wasm_browser_build.index(
+                "{", local_storage_outer_selector_start
+            )
+        ]
+        self.assertIn(
+            "enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe",
+            local_storage_outer_selector,
+        )
+        local_storage_target = _body_after_signature(
+            self.wasm_browser_build,
+            'source_set("wasm_profile_local_storage_smoke")',
+        )
+        self.assertIn(
+            'sources = [ "wasm_profile_local_storage_smoke.cc" ]',
+            local_storage_target,
+        )
+        self.assertIn(
+            '":wasm_profile_m7_persistent_default_partition_shutdown_probe_config",',
+            local_storage_target,
+        )
+        renderer_selector_start = local_storage_target.index(
+            "    if (enable_chromium_wasm_m7_default_partition_local_storage_test ||"
+        )
+        renderer_selector_opening_brace = local_storage_target.index(
+            "{", renderer_selector_start
+        )
+        renderer_selector_end = _matching_closing_brace(
+            local_storage_target,
+            renderer_selector_opening_brace,
+            "legacy LocalStorage renderer source selector",
+        )
+        renderer_selector = local_storage_target[
+            renderer_selector_start : renderer_selector_end + 1
+        ]
+        self.assertIn("wasm_profile_renderer_local_storage_ui.cc", renderer_selector)
+        self.assertNotIn(
+            "enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe",
+            renderer_selector,
+        )
+        self.assertLess(
+            local_storage_target.index(
+                'sources = [ "wasm_profile_local_storage_smoke.cc" ]'
+            ),
+            renderer_selector_start,
+        )
+        self.assertIn(
+            "defined(CHROME_WASM_M7_LOCAL_STORAGE_CLOSE_FENCE_TEST)",
+            self.dom_storage_test_support_header,
+        )
+        self.assertNotIn(
+            "#define CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST",
+            self.dom_storage_test_support_header,
+        )
 
         shutdown_run = _body_after_signature(
             self.shutdown_probe,
@@ -1276,8 +1354,103 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.assertEqual(1, self.shutdown_probe.count("GetStoragePartition("))
         self.assertNotIn("Flush(", self.shutdown_probe)
 
+        # Run() owns the only default-partition policy query. The embedded
+        # participant receives that already-created partition and validates it
+        # directly rather than issuing a second default-partition lookup.
         for token in (
-            "partition->GetCookieManagerForBrowserProcess();",
+            "content::StoragePartition* storage_partition,",
+            "calling BrowserContext::GetDefaultStoragePartition().",
+        ):
+            with self.subTest(local_storage_header_token=token):
+                self.assertIn(token, self.local_storage_smoke_header)
+        for token in (
+            "input.emit_protocol_markers = false;",
+            "crypto::RandBytesAsArray<32>()",
+            "PERSISTENT_LOCAL_STORAGE_ON_DISK_MAP_UPDATE_AND_CLOSE_OK",
+            "kLocalStorageOperationTimeout",
+            "local_storage_participant_->QuarantineForFailureShutdown()",
+        ):
+            with self.subTest(local_storage_token=token):
+                self.assertIn(token, self.shutdown_probe)
+        local_storage_start = _body_after_signature(
+            self.local_storage_smoke,
+            "  bool Start(base::OnceCallback<void(bool)> completion)",
+        )
+        supplied_partition_start = local_storage_start.index(
+            "if (storage_partition) {"
+        )
+        supplied_partition_opening_brace = local_storage_start.index(
+            "{", supplied_partition_start
+        )
+        supplied_partition_end = _matching_closing_brace(
+            local_storage_start,
+            supplied_partition_opening_brace,
+            "supplied LocalStorage StoragePartition validation",
+        )
+        supplied_partition_branch = local_storage_start[
+            supplied_partition_start : supplied_partition_end + 1
+        ]
+        for token in (
+            "const content::StoragePartitionConfig& config =",
+            "!config.is_default() || config.in_memory()",
+            "storage_partition->GetPath() != profile_path_",
+        ):
+            with self.subTest(supplied_partition_token=token):
+                self.assertIn(token, supplied_partition_branch)
+        self.assertNotIn("GetDefaultStoragePartition(", supplied_partition_branch)
+        self.assertLess(
+            supplied_partition_end,
+            local_storage_start.index(
+                "storage_partition = browser_context_->GetDefaultStoragePartition();"
+            ),
+        )
+
+        local_storage_receipt_start = _body_after_signature(
+            self.shutdown_probe, "  void StartLocalStorageReceipt()"
+        )
+        for token in (
+            "TryAcquireWasmProfileStorageProfileIO()",
+            "std::make_unique<WasmProfileLocalStorageLifetimeParticipant>(",
+            "browser_context_, partition_, partition_->GetPath()",
+            "local_storage_operation_timeout_.Start(",
+            "OnLocalStorageOperationTimeout",
+            "OnLocalStorageReceiptClosed",
+        ):
+            with self.subTest(local_storage_receipt_token=token):
+                self.assertIn(token, local_storage_receipt_start)
+        local_storage_closed = _body_after_signature(
+            self.shutdown_probe, "  void OnLocalStorageReceiptClosed(bool success)"
+        )
+        for token in (
+            "local_storage_participant_->DidSucceed()",
+            "local_storage_on_disk_commit_and_close_acknowledged_ = true;",
+            'EmitMarker("PERSISTENT_LOCAL_STORAGE_ON_DISK_'
+            'MAP_UPDATE_AND_CLOSE_OK");',
+            "StartCookieReceipt();",
+        ):
+            with self.subTest(local_storage_closed_token=token):
+                self.assertIn(token, local_storage_closed)
+        self.assertLess(
+            local_storage_closed.index(
+                'EmitMarker("PERSISTENT_LOCAL_STORAGE_ON_DISK_'
+                'MAP_UPDATE_AND_CLOSE_OK");'
+            ),
+            local_storage_closed.index("StartCookieReceipt();"),
+        )
+        local_storage_failure = _body_after_signature(
+            self.shutdown_probe, "  void FailLocalStorageReceipt("
+        )
+        for token in (
+            "local_storage_operation_timeout_.Stop();",
+            "local_storage_participant_->Cancel();",
+            "local_storage_participant_->QuarantineForFailureShutdown();",
+            "ScheduleSelectedOwnerReceiptsCompletion(/*success=*/false);",
+        ):
+            with self.subTest(local_storage_failure_token=token):
+                self.assertIn(token, local_storage_failure)
+
+        for token in (
+            "partition_->GetCookieManagerForBrowserProcess();",
             "cookie_manager->CloneInterface(",
             'EmitMarker("PERSISTENT_COOKIE_WRITE_ACCEPTED");',
             "FlushCookieStore(",
@@ -1420,6 +1593,24 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(",
             self.shutdown_probe_unit,
         )
+        self.assertIn(
+            "IsWasmPersistentDefaultPartitionSelectedOwnerReceiptWitness(",
+            self.shutdown_probe_header,
+        )
+        self.assertIn(
+            "RequiresBothSelectedOwnerReceipts", self.shutdown_probe_unit
+        )
+        selected_owner_predicate = _body_after_signature(
+            self.shutdown_probe,
+            "bool IsWasmPersistentDefaultPartitionSelectedOwnerReceiptWitness(",
+        )
+        for token in (
+            "local_storage_receipt_started",
+            "local_storage_on_disk_commit_and_close_acknowledged",
+            "IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(",
+        ):
+            with self.subTest(selected_owner_predicate_token=token):
+                self.assertIn(token, selected_owner_predicate)
 
         for token in (
             "SealStoragePartitionCreationForShutdown();",
@@ -1460,6 +1651,20 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             ),
             self.shutdown_probe.index('EmitMarker("PARTITION_MAP_DROPPED");'),
         )
+
+        # The subsequent structural gates require both selected owner
+        # receipts, not merely the Cookies SQLite receipt.
+        for signature in (
+            "  void NotifyCreationSealed(content::BrowserContext* browser_context)",
+            "  void NotifyMapDropped(content::BrowserContext* browser_context)",
+            "  void NotifyPartitionDestroyNotification()",
+            "  bool CanUseFailureRetirement() const",
+        ):
+            with self.subTest(selected_owner_gate=signature):
+                self.assertIn(
+                    "HasSelectedOwnerReceiptWitness()",
+                    _body_after_signature(self.shutdown_probe, signature),
+                )
 
         for token in (
             "ArmWasmStoragePartitionShutdownNotificationForTest(",
@@ -1506,6 +1711,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
 
         for token in (
             "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1",
+            "CHROME_WASM_M7_LOCAL_STORAGE_CLOSE_FENCE_TEST=1",
             "wasm_storage_partition_shutdown_test_support.cc",
             "wasm_storage_partition_shutdown_test_support.h",
         ):
@@ -1555,6 +1761,34 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.assertIn(
             "CancelWasmStoragePartitionShutdownNotificationForTest();",
             report_failure_body,
+        )
+        for token in (
+            "local_storage_participant_->Cancel();",
+            "local_storage_participant_->QuarantineForFailureShutdown();",
+            "local_storage_operation_timeout_.Stop();",
+            "ClearProfileBoundPointers();",
+        ):
+            with self.subTest(report_failure_local_storage_token=token):
+                self.assertIn(token, report_failure_body)
+        selected_owner_handoff = _body_after_signature(
+            self.shutdown_probe,
+            "  void ScheduleSelectedOwnerReceiptsCompletion(bool success)",
+        )
+        for token in (
+            "ClearProfileBoundPointers();",
+            "DeliverSelectedOwnerReceiptsCompletion",
+            "PostTask(",
+        ):
+            with self.subTest(selected_owner_handoff_token=token):
+                self.assertIn(token, selected_owner_handoff)
+        clear_profile_bound_pointers = _body_after_signature(
+            self.shutdown_probe, "  void ClearProfileBoundPointers()"
+        )
+        self.assertIn("partition_ = nullptr;", clear_profile_bound_pointers)
+        self.assertIn("browser_context_ = nullptr;", clear_profile_bound_pointers)
+        self.assertLess(
+            selected_owner_handoff.index("ClearProfileBoundPointers();"),
+            selected_owner_handoff.index("PostTask("),
         )
 
         content_notification = _body_after_signature(
@@ -1678,15 +1912,16 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             pre_main[shutdown_branch:],
         )
         self.assertIn(
-            "OnWasmPersistentDefaultPartitionShutdownProbeCookieStoreClosed",
+            "OnWasmPersistentDefaultPartitionShutdownProbeSelectedOwnerReceiptsClosed",
             pre_main[shutdown_branch:],
         )
-        cookie_close_callback = _body_after_signature(
+        selected_owner_close_callback = _body_after_signature(
             self.main_parts,
             "void WasmBrowserMainParts::\n"
-            "    OnWasmPersistentDefaultPartitionShutdownProbeCookieStoreClosed(",
+            "    OnWasmPersistentDefaultPartitionShutdownProbe"
+            "SelectedOwnerReceiptsClosed(",
         )
-        self.assertIn("RequestShutdown();", cookie_close_callback)
+        self.assertIn("RequestShutdown();", selected_owner_close_callback)
 
         finish_shutdown = _body_after_signature(
             self.main_parts, "void WasmBrowserMainParts::FinishShutdown()"

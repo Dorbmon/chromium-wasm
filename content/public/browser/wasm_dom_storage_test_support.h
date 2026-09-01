@@ -9,7 +9,8 @@
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_LOCAL_STORAGE_CLOSE_FENCE_TEST)
 #include "components/services/storage/public/mojom/wasm_local_storage_test_api.mojom.h"
 #endif
 #include "content/common/content_export.h"
@@ -23,7 +24,8 @@ class DOMStorageContext;
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_LOCAL_STORAGE_CLOSE_FENCE_TEST)
 // Binds the source-selected M7 LocalStorage close-fence protocol through the
 // real default partition's DOMStorageContext. `context` must be the instance
 // obtained from StoragePartition::GetDOMStorageContext(); this bridge has no

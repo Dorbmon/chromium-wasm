@@ -5,6 +5,14 @@
 #ifndef CONTENT_BROWSER_DOM_STORAGE_DOM_STORAGE_CONTEXT_WRAPPER_H_
 #define CONTENT_BROWSER_DOM_STORAGE_DOM_STORAGE_CONTEXT_WRAPPER_H_
 
+// See //components/services/storage: the selected persistent-default shutdown
+// probe uses the same private direct LocalStorage close-fence bridge, while
+// ordinary Wasm Chrome remains outside this source closure.
+#if defined(CHROME_WASM_M7_LOCAL_STORAGE_CLOSE_FENCE_TEST) && \
+    !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+#define CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST 1
+#endif
+
 #include <map>
 #include <optional>
 #include <string>
