@@ -43,6 +43,7 @@
     !defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) && \
+    !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
@@ -85,6 +86,11 @@
 #include "chrome/browser/wasm/wasm_profile_indexed_db_smoke.h"  // nogncheck
 #include "chrome/browser/wasm/wasm_profile_renderer_indexed_db_ui.h"  // nogncheck
 #endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+// This helper is source-selected into the configuration-only probe. It must
+// remain absent from normal Chrome and has no StoragePartition owner API.
+#include "chrome/browser/wasm/wasm_profile_persistent_default_partition_policy_probe.h"  // nogncheck
+#endif
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -99,6 +105,7 @@
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -149,19 +156,21 @@ class WasmViewsDelegate final : public views::ViewsDelegate {
 };
 
 constexpr char kLocale[] = "en-US";
-constexpr char kWasmBrowserViewSmokeSwitch[] = "wasm-browser-view-smoke";
-constexpr char kWasmBrowserWindowCoreSmokeSwitch[] =
+[[maybe_unused]] constexpr char kWasmBrowserViewSmokeSwitch[] =
+    "wasm-browser-view-smoke";
+[[maybe_unused]] constexpr char kWasmBrowserWindowCoreSmokeSwitch[] =
     "wasm-browser-window-core-smoke";
-constexpr char kWasmBrowserSmokeSwitch[] = "wasm-browser-smoke";
-constexpr char kWasmBrowserControlledHttpsSmokeSwitch[] =
+[[maybe_unused]] constexpr char kWasmBrowserSmokeSwitch[] =
+    "wasm-browser-smoke";
+[[maybe_unused]] constexpr char kWasmBrowserControlledHttpsSmokeSwitch[] =
     "wasm-browser-controlled-https-smoke";
-constexpr char kWasmBrowserM9WispRecoverySmokeSwitch[] =
+[[maybe_unused]] constexpr char kWasmBrowserM9WispRecoverySmokeSwitch[] =
     "wasm-browser-m9-wisp-recovery-smoke";
-constexpr char kWasmBrowserM9RepeatingTimerSmokeSwitch[] =
+[[maybe_unused]] constexpr char kWasmBrowserM9RepeatingTimerSmokeSwitch[] =
     "wasm-browser-m9-repeating-timer-smoke";
-constexpr char kWasmBrowserM9RepeatingTimerSmokeTicksSwitch[] =
+[[maybe_unused]] constexpr char kWasmBrowserM9RepeatingTimerSmokeTicksSwitch[] =
     "wasm-browser-m9-repeating-timer-smoke-ticks";
-constexpr char kWasmBrowserLifecycleSmokeSwitch[] =
+[[maybe_unused]] constexpr char kWasmBrowserLifecycleSmokeSwitch[] =
     "wasm-browser-lifecycle-smoke";
 constexpr char kWasmBrowserDevToolsProtocolSmokeSwitch[] =
     "wasm-browser-devtools-protocol-smoke";
@@ -232,7 +241,7 @@ constexpr char kWasmBrowserLifecycleSmokePassMarker[] =
     "CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:PASS";
 constexpr char kWasmBrowserHostAcceleratorSmokeReadyMarker[] =
     "CHROMIUM_WASM_M6_HOST_ACCELERATORS:READY";
-constexpr char kWasmNormalBrowserReadyMarker[] =
+[[maybe_unused]] constexpr char kWasmNormalBrowserReadyMarker[] =
     "CHROMIUM_WASM_M6_NORMAL_BROWSER:READY";
 constexpr char kWasmNormalBrowserPassMarker[] =
     "CHROMIUM_WASM_M6_NORMAL_BROWSER:PASS";
@@ -261,15 +270,16 @@ constexpr char kWasmBrowserM9RepeatingTimerSmokePassMarker[] =
     "CHROMIUM_WASM_M9_REPEATING_TIMER:PASS";
 constexpr char kWasmBrowserM9RepeatingTimerSmokeTimeoutMarker[] =
     "CHROMIUM_WASM_M9_REPEATING_TIMER:TIMEOUT";
-constexpr char kWasmBrowserWindowViewSmokeSwitch[] =
+[[maybe_unused]] constexpr char kWasmBrowserWindowViewSmokeSwitch[] =
     "wasm-browser-window-view-smoke";
-constexpr char kWasmBrowserWindowLifecycleSmokeSwitch[] =
+[[maybe_unused]] constexpr char kWasmBrowserWindowLifecycleSmokeSwitch[] =
     "wasm-browser-window-lifecycle-smoke";
 constexpr char kWasmBrowserWindowLifecycleSmokeReadyMarker[] =
     "CHROMIUM_WASM_M6_BROWSER_WINDOW_LIFECYCLE:READY";
 constexpr base::TimeDelta kWasmBrowserWindowLifecycleSmokeVisibleDuration =
     base::Milliseconds(250);
-constexpr char kWasmTabCoreSmokeSwitch[] = "wasm-tab-core-smoke";
+[[maybe_unused]] constexpr char kWasmTabCoreSmokeSwitch[] =
+    "wasm-tab-core-smoke";
 constexpr char kRequiredAssets[][24] = {
     "chrome_100_percent.pak",
     "chrome_200_percent.pak",
@@ -283,6 +293,7 @@ constexpr char kRequiredAssets[][24] = {
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -428,6 +439,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -442,6 +454,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -467,6 +480,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -486,6 +500,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -497,6 +512,11 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     return CHROME_RESULT_CODE_MISSING_DATA;
   }
 
+// The policy-only artifact needs a live BrowserContext solely to observe its
+// default StoragePartitionConfig. It must not register Browser keyed-service
+// factories or WebUI configurations, because either can cause real profile
+// service construction before the pure policy observation.
+#if !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
   // Profile's base constructor marks its BrowserContext live. Register the
   // Wasm-owned factory first so its keyed-service lifecycle can be created and
   // shut down with the profile rather than arriving lazily after that point.
@@ -527,6 +547,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   // is created; normal chrome_wasm has neither this route nor that partition.
   chrome::EnsureWasmProfileRendererIndexedDBWebUIConfigRegistered();
 #endif
+#endif  // !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
 
   // BrowserThread::IO and ThreadPool are live at this stage. The profile's
   // explicit I/O runner may therefore be created without racing startup.
@@ -534,6 +555,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -555,6 +577,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -570,6 +593,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -585,6 +609,41 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   }
 #endif
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+  // Stop immediately after the live BrowserContext's construction admission.
+  // The probe calls only StoragePartitionConfig::CreateDefault() and returns
+  // before any WebUI instance, Browser, BrowserView, WebContents,
+  // NetworkContext, or StoragePartition startup path can run.
+  if (!chrome::IsWasmPersistentDefaultPartitionPolicyProbeEnabled()) {
+    chrome::ReportWasmPersistentDefaultPartitionPolicyProbeFailure(
+        chrome::WasmPersistentDefaultPartitionPolicyProbeFailureStage::
+            kArguments);
+    RequestShutdown();
+    return content::RESULT_CODE_NORMAL_EXIT;
+  }
+  auto policy_probe_profile_io_hold =
+      chrome::TryAcquireWasmProfileStorageProfileIO();
+  if (!policy_probe_profile_io_hold) {
+    chrome::ReportWasmPersistentDefaultPartitionPolicyProbeFailure(
+        chrome::WasmPersistentDefaultPartitionPolicyProbeFailureStage::
+            kAdmission);
+    RequestShutdown();
+    return content::RESULT_CODE_NORMAL_EXIT;
+  }
+  if (!chrome::RunWasmPersistentDefaultPartitionPolicyProbe(
+          profile_.get(), std::move(*policy_probe_profile_io_hold))) {
+    LOG(ERROR) << "chrome_wasm persistent default StoragePartition policy "
+                  "probe failed";
+  }
+  RequestShutdown();
+  return content::RESULT_CODE_NORMAL_EXIT;
+#endif
+
+// The policy-only artifact returns above before Chrome's host, Browser, and
+// WebContents setup. Exclude the ordinary remainder at source selection time
+// as well, both to preserve that boundary and to avoid compiling unreachable
+// host initialization under the dedicated probe configuration.
+#if !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -1203,6 +1262,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   std::fprintf(stderr, "%s\n", kWasmNormalBrowserReadyMarker);
   std::fflush(stderr);
   return content::RESULT_CODE_NORMAL_EXIT;
+#endif  // !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
 }
 
 void WasmBrowserMainParts::WillRunMainMessageLoop(
@@ -2318,6 +2378,10 @@ void WasmBrowserMainParts::FinishShutdown() {
 #if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
                 chrome::NotifyWasmProfileIndexedDBSmokeFenceResult(false);
 #endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+                chrome::NotifyWasmPersistentDefaultPartitionPolicyProbePrefsFenceResult(
+                    false);
+#endif
                 return;
               }
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
@@ -2364,6 +2428,7 @@ void WasmBrowserMainParts::FinishShutdown() {
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -2378,11 +2443,35 @@ void WasmBrowserMainParts::FinishShutdown() {
     // cleanup rather than a clean handoff.
     // This notification publishes a quiescence observation only; it never
     // acknowledges a clean backend handoff.
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+    // The policy witness may use a clean V4 handoff only after the exact
+    // configuration observation and this strict Preferences fence succeeded.
+    // Any failed configuration, disabled protocol, or admission refusal must
+    // select a sticky fail-closed shutdown before the outer drain. Marker state
+    // alone is not an ownership signal for WasmProfileStorageState.
+    chrome::NotifyWasmPersistentDefaultPartitionPolicyProbePrefsFenceResult(
+        prefs_shutdown_fence_succeeded);
+#endif
     profile_.reset();
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+    // Profile destruction can still run source-selected keyed-service teardown.
+    // Recheck the policy-query counter after that boundary before selecting a
+    // clean handoff; any extra query must instead retain the lease fail-closed.
+    const bool policy_probe_can_clean_shutdown =
+        chrome::CanWasmPersistentDefaultPartitionPolicyProbeUseCleanShutdown();
+    const bool profile_shutdown_notified =
+        policy_probe_can_clean_shutdown
+            ? chrome::NotifyWasmProfileStorageProfileShutdown()
+            : chrome::NotifyWasmProfileStorageProfileShutdownFailClosed();
+#else
     const bool profile_shutdown_notified =
         chrome::NotifyWasmProfileStorageProfileShutdown();
+#endif
     bool smoke_allows_storage_lifecycle =
         prefs_shutdown_fence_succeeded && profile_shutdown_notified;
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+    smoke_allows_storage_lifecycle &= policy_probe_can_clean_shutdown;
+#endif
     if (!prefs_shutdown_fence_succeeded) {
       // The failed preference holder is now visible to the outer failure
       // retirement permit. Do not report a smoke lifecycle success or let a
@@ -2490,6 +2579,10 @@ void WasmBrowserMainParts::FinishShutdown() {
     chrome::NotifyWasmProfileIndexedDBSmokeStorageLifecycle(
         smoke_allows_storage_lifecycle);
 #endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+    chrome::NotifyWasmPersistentDefaultPartitionPolicyProbeStorageLifecycle(
+        smoke_allows_storage_lifecycle);
+#endif
     if (!profile_shutdown_notified) {
       // Do not synthesize a clean handoff. The outer scoped drain observes
       // this missing acknowledgement, retains the lease, and changes the
@@ -2588,6 +2681,7 @@ void WasmBrowserMainParts::ShutdownFoundation() {
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \

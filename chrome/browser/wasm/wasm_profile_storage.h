@@ -23,7 +23,8 @@ bool InitializeWasmProfileStorage();
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
 // Mounts one dedicated Default-profile acceptance's leased V4 OPFS backend
 // only at /profile/Default. Its /profile parent remains on WasmFS's default
 // memory backend, which the initializer validates before and after the child
@@ -66,9 +67,10 @@ bool NotifyWasmProfileStorageProfileShutdown();
 // Records terminal profile destruction after the UI-loop shutdown path could
 // not certify a complete profile handoff. This still closes profile-I/O
 // admission and requires quiescence, but it permanently selects WasmFS's
-// fail-closed retirement instead of releasing the profile lease. It is only
-// for BrowserMainParts' foundation fallback; normal shutdown must use the
-// ordinary notification above.
+// fail-closed retirement instead of releasing the profile lease. It is for
+// BrowserMainParts' foundation fallback and for a source-selected validation
+// failure whose completed profile must not authorize a clean handoff. Normal
+// successful shutdown uses the ordinary notification above.
 bool NotifyWasmProfileStorageProfileShutdownFailClosed();
 
 // Admits one known profile-storage operation while the mounted test profile is

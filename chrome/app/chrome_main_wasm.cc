@@ -17,6 +17,7 @@
     !defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) && \
+    !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
@@ -55,10 +56,16 @@
 // protocol; ordinary chrome_wasm never parses its switches or links it.
 #include "chrome/browser/wasm/wasm_profile_indexed_db_smoke.h"  // nogncheck
 #endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+// Only the dedicated configuration probe owns this private switch and marker
+// protocol; normal chrome_wasm neither links it nor changes its policy.
+#include "chrome/browser/wasm/wasm_profile_persistent_default_partition_policy_probe.h"  // nogncheck
+#endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -101,6 +108,7 @@ bool IsNormalChromeMainResult(int result) {
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -187,6 +195,9 @@ extern "C" int ChromeMain(int argc, const char** argv) {
 #if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
   bool indexed_db_smoke_enabled = false;
 #endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+  bool persistent_default_partition_policy_probe_enabled = false;
+#endif
 #if defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -205,6 +216,7 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     !defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) && \
+    !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
@@ -264,6 +276,16 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     if (indexed_db_smoke_requested) {
       indexed_db_smoke_enabled =
           chrome::EnableWasmProfileIndexedDBSmokeTestMode();
+    }
+#endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+    // This private switch selects a configuration-only default-partition
+    // policy witness. It never enables a StoragePartition service path.
+    const bool persistent_default_partition_policy_probe_requested =
+        chrome::HasWasmPersistentDefaultPartitionPolicyProbeArguments();
+    if (persistent_default_partition_policy_probe_requested) {
+      persistent_default_partition_policy_probe_enabled =
+          chrome::EnableWasmPersistentDefaultPartitionPolicyProbe();
     }
 #endif
 
@@ -407,6 +429,7 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -448,6 +471,17 @@ extern "C" int ChromeMain(int argc, const char** argv) {
       // Keep /profile/Default unmounted unless this one exact renderer-owned
       // IndexedDB protocol was accepted before Content can create a profile.
       result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+#elif defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+    if (!persistent_default_partition_policy_probe_requested ||
+        !persistent_default_partition_policy_probe_enabled) {
+      // Do not mount V4 or fall through to normal Chrome when the sole
+      // configuration-only protocol was absent or malformed.
+      if (!persistent_default_partition_policy_probe_requested) {
+        chrome::ReportWasmPersistentDefaultPartitionPolicyProbeFailure(
+            chrome::WasmPersistentDefaultPartitionPolicyProbeFailureStage::
+                kArguments);
+      }
+      result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
 #endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
@@ -458,6 +492,8 @@ extern "C" int ChromeMain(int argc, const char** argv) {
 #elif defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
     } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {
 #elif defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+    } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {
+#elif defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
     } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {
 #else
     } else if (!chrome::InitializeWasmProfileStorage()) {
@@ -491,6 +527,13 @@ extern "C" int ChromeMain(int argc, const char** argv) {
       if (indexed_db_smoke_requested) {
         chrome::ReportWasmProfileIndexedDBSmokeFailure(
             chrome::WasmProfileIndexedDBSmokeFailureStage::kStorage);
+      }
+#endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+      if (persistent_default_partition_policy_probe_requested) {
+        chrome::ReportWasmPersistentDefaultPartitionPolicyProbeFailure(
+            chrome::WasmPersistentDefaultPartitionPolicyProbeFailureStage::
+                kStorage);
       }
 #endif
       // A failed mount can still have acquired a lease. Its scoped cleanup
@@ -548,6 +591,14 @@ extern "C" int ChromeMain(int argc, const char** argv) {
         chrome::WasmProfileIndexedDBSmokeFailureStage::kContent);
   }
 #endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+  if (persistent_default_partition_policy_probe_enabled &&
+      !IsNormalChromeMainResult(result)) {
+    chrome::ReportWasmPersistentDefaultPartitionPolicyProbeFailure(
+        chrome::WasmPersistentDefaultPartitionPolicyProbeFailureStage::
+            kContent);
+  }
+#endif
 
   // The dedicated M7 probes seal and drain their exact V4 leased OPFS backend
   // only after ContentMain and its delegate have both returned, when no
@@ -557,6 +608,7 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -613,6 +665,16 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     chrome::NotifyWasmProfileIndexedDBSmokeBackendDrain(
         drain_result.Succeeded());
 #endif
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+    chrome::NotifyWasmPersistentDefaultPartitionPolicyProbeBackendDrain(
+        drain_result.Succeeded());
+    if (!chrome::DidWasmPersistentDefaultPartitionPolicyProbeComplete() &&
+        IsNormalChromeMainResult(result)) {
+      // A marker-protocol failure is not a normal policy probe result, even if
+      // the storage adapter itself was able to complete its cleanup.
+      result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    }
+#endif
     if (!drain_result.Succeeded()) {
       // Before acknowledged Web Locks release, a drain failure has no safe
       // handoff. A post-release worker-retirement failure has already released
@@ -660,6 +722,12 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     if (IsNormalChromeMainResult(result)) {
       result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
     }
+#elif defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
+  } else if (persistent_default_partition_policy_probe_enabled) {
+    chrome::NotifyWasmPersistentDefaultPartitionPolicyProbeBackendDrain(false);
+    if (IsNormalChromeMainResult(result)) {
+      result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    }
 #endif
   }
 #endif
@@ -668,6 +736,7 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     !defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) && \
+    !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \

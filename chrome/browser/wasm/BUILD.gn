@@ -19,6 +19,7 @@ import("//chrome/browser/wasm/wasm_profile_indexed_db_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_cookie_local_storage_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_cookie_history_local_storage_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_local_storage_smoke.gni")
+import("//chrome/browser/wasm/wasm_profile_persistent_default_partition_policy_probe.gni")
 import("//chrome/browser/wasm/wasm_profile_shutdown_fence_failure_diagnostic.gni")
 assert(
     !(enable_chromium_wasm_m7_profile_database_test &&
@@ -1949,6 +1950,12 @@ config("wasm_profile_m7_indexed_db_smoke_config") {
   defines = [ "CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST=1" ]
 }
 
+# This probe changes only WasmProfile's default StoragePartition policy method.
+# It has no source-selected public class layout, service, or WebUI API.
+config("wasm_profile_m7_persistent_default_partition_policy_probe_config") {
+  defines = [ "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE=1" ]
+}
+
 source_set("wasm_profile") {
   sources = [
     "wasm_profile.cc",
@@ -2000,6 +2007,10 @@ source_set("wasm_profile") {
   if (enable_chromium_wasm_m7_profile_indexed_db_test) {
     public_configs = [ ":wasm_profile_m7_indexed_db_smoke_config" ]
     deps += [ ":wasm_profile_indexed_db_smoke" ]
+  }
+  if (enable_chromium_wasm_m7_persistent_default_partition_policy_probe) {
+    configs += [ ":wasm_profile_m7_persistent_default_partition_policy_probe_config" ]
+    deps += [ ":wasm_profile_persistent_default_partition_policy_probe" ]
   }
   if (enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
     public_configs = [ ":wasm_profile_m7_cookie_local_storage_smoke_config" ]
@@ -2489,6 +2500,39 @@ source_set("wasm_profile_storage_drain_result") {
   public = [ "wasm_profile_storage_drain_result.h" ]
 }
 
+# This isolated probe owns only its marker grammar and a pure
+# StoragePartitionConfig classification. It must remain free of any
+# StoragePartition, WebContents, NetworkContext, or storage-service owner.
+if (enable_chromium_wasm_m7_persistent_default_partition_policy_probe) {
+  source_set("wasm_profile_persistent_default_partition_policy_probe") {
+    public = [ "wasm_profile_persistent_default_partition_policy_probe.h" ]
+
+    sources = [ "wasm_profile_persistent_default_partition_policy_probe.cc" ]
+
+    public_deps = [
+      ":wasm_profile_ordered_drain_lifecycle",
+      "//content/public/browser",
+    ]
+
+    deps = [ "//base" ]
+  }
+
+  test("wasm_profile_persistent_default_partition_policy_probe_unittests") {
+    sources = [
+      "wasm_profile_persistent_default_partition_policy_probe_unittest.cc",
+    ]
+
+    deps = [
+      ":wasm_profile_persistent_default_partition_policy_probe",
+      "//base",
+      "//base/test:run_all_unittests",
+      "//base/test:test_support",
+      "//content/test:wasm_browser_task_environment_test_support",
+      "//testing/gtest",
+    ]
+  }
+}
+
 # This owns the experimental leased OPFS mount used only by the dedicated M7
 # profile probes. It is intentionally separate from WasmProfile: JsonPrefStore
 # owns only the profile's Preferences file, while other Chrome-owned stores
@@ -2518,6 +2562,9 @@ source_set("wasm_profile_storage") {
   }
   if (enable_chromium_wasm_m7_profile_indexed_db_test) {
     configs += [ ":wasm_profile_m7_indexed_db_smoke_config" ]
+  }
+  if (enable_chromium_wasm_m7_persistent_default_partition_policy_probe) {
+    configs += [ ":wasm_profile_m7_persistent_default_partition_policy_probe_config" ]
   }
   if (enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
     configs += [ ":wasm_profile_m7_cookie_local_storage_smoke_config" ]
@@ -2782,6 +2829,10 @@ source_set("wasm_browser_main_parts") {
     configs += [ ":wasm_profile_m7_indexed_db_smoke_config" ]
     deps += [ ":wasm_profile_indexed_db_smoke" ]
   }
+  if (enable_chromium_wasm_m7_persistent_default_partition_policy_probe) {
+    configs += [ ":wasm_profile_m7_persistent_default_partition_policy_probe_config" ]
+    deps += [ ":wasm_profile_persistent_default_partition_policy_probe" ]
+  }
   if (enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
     configs += [ ":wasm_profile_m7_cookie_local_storage_smoke_config" ]
     deps += [
@@ -2832,7 +2883,8 @@ source_set("wasm_browser_main_parts") {
       enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
       enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
       enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test ||
-      enable_chromium_wasm_m7_profile_indexed_db_test) {
+      enable_chromium_wasm_m7_profile_indexed_db_test ||
+      enable_chromium_wasm_m7_persistent_default_partition_policy_probe) {
     deps += [
       ":wasm_profile_persistent_prefs_lifetime_participant",
       ":wasm_profile_storage",

@@ -26,6 +26,7 @@ import("//chrome/browser/wasm/wasm_profile_cookie_local_storage_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_cookie_history_local_storage_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_indexed_db_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_local_storage_smoke.gni")
+import("//chrome/browser/wasm/wasm_profile_persistent_default_partition_policy_probe.gni")
 import("//chrome/browser/wasm/wasm_profile_shutdown_fence_failure_diagnostic.gni")
 assert(
     !(enable_chromium_wasm_m7_profile_database_test &&
@@ -705,6 +706,14 @@ if (is_wasm && enable_chromium_wasm_chrome) {
       output_name = "chrome_wasm_m7_profile_indexed_db_test"
       defines = [ "CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST=1" ]
     }
+    if (enable_chromium_wasm_m7_persistent_default_partition_policy_probe) {
+      # This configuration-only witness never constructs a StoragePartition.
+      # It asks CreateDefault() to report the default policy in one fresh
+      # artifact, with the ordinary Chrome policy and service graph unchanged.
+      output_name =
+          "chrome_wasm_m7_persistent_default_partition_policy_probe"
+      defines = [ "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE=1" ]
+    }
     if (enable_chromium_wasm_m7_profile_preferences_test ||
         enable_chromium_wasm_m7_profile_database_test ||
         enable_chromium_wasm_m7_default_partition_local_storage_test ||
@@ -712,7 +721,8 @@ if (is_wasm && enable_chromium_wasm_chrome) {
         enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
         enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
         enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test ||
-        enable_chromium_wasm_m7_profile_indexed_db_test) {
+        enable_chromium_wasm_m7_profile_indexed_db_test ||
+        enable_chromium_wasm_m7_persistent_default_partition_policy_probe) {
       configs += [ ":chrome_wasm_profile_storage" ]
     }
     deps = [
@@ -738,6 +748,9 @@ if (is_wasm && enable_chromium_wasm_chrome) {
     }
     if (enable_chromium_wasm_m7_profile_indexed_db_test) {
       deps += [ "//chrome/browser/wasm:wasm_profile_indexed_db_smoke" ]
+    }
+    if (enable_chromium_wasm_m7_persistent_default_partition_policy_probe) {
+      deps += [ "//chrome/browser/wasm:wasm_profile_persistent_default_partition_policy_probe" ]
     }
     if (enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
       deps += [
@@ -780,7 +793,8 @@ if (is_wasm && enable_chromium_wasm_chrome) {
         enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
         enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
         enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test ||
-        enable_chromium_wasm_m7_profile_indexed_db_test) {
+        enable_chromium_wasm_m7_profile_indexed_db_test ||
+        enable_chromium_wasm_m7_persistent_default_partition_policy_probe) {
       deps += [ "//chrome/browser/wasm:wasm_profile_storage" ]
     } else {
       deps += [ "//chrome/browser/wasm:wasm_profile_shutdown_failure_latch" ]

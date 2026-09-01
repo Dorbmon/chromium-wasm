@@ -1,0 +1,30 @@
+<!doctype html>
+<!-- Copyright 2026 The Chromium Authors
+     Use of this source code is governed by a BSD-style license that can be
+     found in the LICENSE file. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chromium Wasm persistent default-partition policy probe</title>
+<main id="m7-persistent-default-partition-policy-probe-root" data-state="starting">
+  <h1>Chromium Wasm persistent default-partition policy probe</h1>
+  <dl id="m7-persistent-default-partition-policy-probe-versions"></dl>
+  <canvas id="m7-persistent-default-partition-policy-probe-canvas" width="1"
+      height="1" tabindex="0"
+      aria-label="Chromium Wasm policy-probe canvas"></canvas>
+  <pre id="m7-persistent-default-partition-policy-probe-status">starting</pre>
+</main>
+<script type="module">
+  import {runChromeWasmPersistentDefaultPartitionPolicyProbeFromQuery} from
+      "./chrome_wasm_persistent_default_partition_policy_probe_smoke.js";
+
+  runChromeWasmPersistentDefaultPartitionPolicyProbeFromQuery().catch(() => {
+    const root = document.querySelector(
+        "#m7-persistent-default-partition-policy-probe-root");
+    const status = document.querySelector(
+        "#m7-persistent-default-partition-policy-probe-status");
+    if (root instanceof HTMLElement) root.dataset.state = "fail";
+    if (status instanceof HTMLElement) {
+      status.textContent = "persistent default-partition policy probe failed";
+    }
+  });
+</script>
