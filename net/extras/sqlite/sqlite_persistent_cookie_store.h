@@ -81,6 +81,15 @@ class COMPONENT_EXPORT(NET_EXTRAS) SQLitePersistentCookieStore
   // sequence. Ordinary lifetime remains destructor-driven.
   void CloseForTesting(base::OnceClosure callback);
 
+  // Test-only direct readback from the currently open SQLite backend. This
+  // does not inspect CookieMonster's in-memory cache and returns false unless
+  // |expected_cookie| is persistent and a matching logical stored row is
+  // readable.
+  // Callers must serialize this after Flush() and before CloseForTesting().
+  void VerifyCookiePersistedForTesting(
+      const CanonicalCookie& expected_cookie,
+      base::OnceCallback<void(bool)> callback);
+
   // Returns how many operations are currently queued. For test use only;
   // and the background thread needs to be wedged for accessing this to be
   // non-racey. Also requires the client thread to be current.

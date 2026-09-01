@@ -33,6 +33,7 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
@@ -721,6 +722,41 @@ TEST_F(SQLitePersistentCookieStoreTest, TestFlush) {
   // We forced a write, so now the file will be bigger.
   ASSERT_TRUE(base::GetFileInfo(path, &info));
   ASSERT_GT(info.size, base_size);
+}
+
+TEST_F(SQLitePersistentCookieStoreTest,
+       VerifyCookiePersistedForTestingReadsCommittedRow) {
+  InitializeStore(/*crypt=*/false, /*restore_old_session_cookies=*/false);
+
+  const base::Time creation = base::Time::Now();
+  std::unique_ptr<CanonicalCookie> expected =
+      CanonicalCookie::CreateUnsafeCookieForTesting(
+          "readback", "expected-value", "readback.example", "/", creation,
+          creation + base::Days(1), /*last_access=*/base::Time(),
+          /*last_update=*/base::Time(), /*secure=*/false,
+          /*httponly=*/false, CookieSameSite::NO_RESTRICTION,
+          COOKIE_PRIORITY_DEFAULT, CookieSourceType::kOther);
+  ASSERT_TRUE(expected);
+  store_->AddCookie(*expected);
+  Flush();
+
+  base::test::TestFuture<bool> matching_readback;
+  store_->VerifyCookiePersistedForTesting(*expected,
+                                          matching_readback.GetCallback());
+  EXPECT_TRUE(matching_readback.Get());
+
+  std::unique_ptr<CanonicalCookie> different_value =
+      CanonicalCookie::CreateUnsafeCookieForTesting(
+          "readback", "different-value", "readback.example", "/", creation,
+          creation + base::Days(1), /*last_access=*/base::Time(),
+          /*last_update=*/base::Time(), /*secure=*/false,
+          /*httponly=*/false, CookieSameSite::NO_RESTRICTION,
+          COOKIE_PRIORITY_DEFAULT, CookieSourceType::kOther);
+  ASSERT_TRUE(different_value);
+  base::test::TestFuture<bool> mismatched_readback;
+  store_->VerifyCookiePersistedForTesting(*different_value,
+                                          mismatched_readback.GetCallback());
+  EXPECT_FALSE(mismatched_readback.Get());
 }
 
 // Test loading old session cookies from the disk.

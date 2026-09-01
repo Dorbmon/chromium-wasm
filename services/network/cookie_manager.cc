@@ -341,6 +341,20 @@ void CookieManager::FlushCookieStore(FlushCookieStoreCallback callback) {
   cookie_store_->FlushStore(std::move(callback));
 }
 
+void CookieManager::VerifyPersistentCookieStoreReadbackForTesting(
+    const net::CanonicalCookie& expected_cookie,
+    VerifyPersistentCookieStoreReadbackForTestingCallback callback) {
+  // SessionCleanupCookieStore exists only when NetworkContext selected a
+  // persistent SQLite cookie database. Do not let an in-memory CookieMonster
+  // satisfy a persistence readback probe.
+  if (!session_cleanup_cookie_store_) {
+    std::move(callback).Run(false);
+    return;
+  }
+  session_cleanup_cookie_store_->VerifyPersistentCookieStoreReadbackForTesting(
+      expected_cookie, std::move(callback));
+}
+
 void CookieManager::CloseCookieStoreForTesting(
     CloseCookieStoreForTestingCallback callback) {
   // SessionCleanupCookieStore is present only when NetworkContext selected an

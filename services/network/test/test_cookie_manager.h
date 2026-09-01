@@ -55,6 +55,11 @@ class TestCookieManager : public network::mojom::CookieManager {
   void CloneInterface(mojo::PendingReceiver<network::mojom::CookieManager>
                           new_interface) override {}
   void FlushCookieStore(FlushCookieStoreCallback callback) override {}
+  void VerifyPersistentCookieStoreReadbackForTesting(
+      const net::CanonicalCookie& expected_cookie,
+      VerifyPersistentCookieStoreReadbackForTestingCallback callback) override {
+    std::move(callback).Run(false);
+  }
   void CloseCookieStoreForTesting(
       CloseCookieStoreForTestingCallback callback) override {
     std::move(callback).Run(false);

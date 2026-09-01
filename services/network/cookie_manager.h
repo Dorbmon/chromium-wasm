@@ -106,6 +106,9 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CookieManager
   }
 
   void FlushCookieStore(FlushCookieStoreCallback callback) override;
+  void VerifyPersistentCookieStoreReadbackForTesting(
+      const net::CanonicalCookie& expected_cookie,
+      VerifyPersistentCookieStoreReadbackForTestingCallback callback) override;
   void CloseCookieStoreForTesting(
       CloseCookieStoreForTestingCallback callback) override;
   void AllowFileSchemeCookies(bool allow,

@@ -218,6 +218,14 @@ class SynchronousCookieManager {
     run_loop.Run();
   }
 
+  bool VerifyPersistentCookieStoreReadbackForTesting(
+      const net::CanonicalCookie& expected_cookie) {
+    base::test::TestFuture<bool> future;
+    cookie_service_->VerifyPersistentCookieStoreReadbackForTesting(
+        expected_cookie, future.GetCallback());
+    return future.Get();
+  }
+
   void SetStorageAccessGrantSettings() {
     std::vector<ContentSettingPatternSource> settings;
     base::RunLoop run_loop;
@@ -2487,6 +2495,22 @@ TEST_F(FlushableCookieManagerTest, FlushCookieStore) {
   ASSERT_EQ(2U, service_wrapper()->callback_count());
 }
 
+TEST_F(CookieManagerTest,
+       VerifyPersistentCookieStoreReadbackForTestingRejectsInMemoryStore) {
+  const base::Time creation = base::Time::Now();
+  std::unique_ptr<net::CanonicalCookie> expected =
+      net::CanonicalCookie::CreateUnsafeCookieForTesting(
+          "readback", "value", kCookieDomain, "/", creation,
+          creation + base::Days(1), base::Time(), base::Time(),
+          /*secure=*/false, /*httponly=*/false,
+          net::CookieSameSite::NO_RESTRICTION, net::COOKIE_PRIORITY_DEFAULT,
+          net::CookieSourceType::kOther);
+  ASSERT_TRUE(expected);
+  EXPECT_FALSE(
+      service_wrapper()->VerifyPersistentCookieStoreReadbackForTesting(
+          *expected));
+}
+
 TEST_F(FlushableCookieManagerTest, DeletionFilterToInfo) {
   mojom::CookieDeletionFilterPtr filter_ptr =
       mojom::CookieDeletionFilter::New();
@@ -2629,6 +2653,17 @@ TEST_F(SessionCleanupCookieManagerTest, PersistSessionCookies) {
   InitializeCookieService(store, store);
 
   EXPECT_EQ(1u, service_wrapper()->GetAllCookies().size());
+}
+
+TEST_F(SessionCleanupCookieManagerTest,
+       VerifyPersistentCookieStoreReadbackForTestingReadsCommittedCookie) {
+  const net::CanonicalCookie expected = CreateCookie();
+  EXPECT_TRUE(SetCanonicalCookie(expected, "https", true));
+  service_wrapper()->FlushCookieStore();
+
+  EXPECT_TRUE(
+      service_wrapper()->VerifyPersistentCookieStoreReadbackForTesting(
+          expected));
 }
 
 TEST_F(SessionCleanupCookieManagerTest, DeleteSessionCookiesOnShutdown) {

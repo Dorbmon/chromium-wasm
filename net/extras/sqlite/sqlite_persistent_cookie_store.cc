@@ -125,6 +125,16 @@ void RecordCookieCommitProblem(CookieCommitProblem event) {
   UMA_HISTOGRAM_ENUMERATION("Cookie.CommitProblem", event);
 }
 
+bool MatchesPersistentCookieReadback(const net::CanonicalCookie& expected,
+                                     const net::CanonicalCookie& actual) {
+  // Do not use HasEquivalentDataMembers() here. CookieMonster may preserve an
+  // older creation date when a cookie replaces an equivalent cookie, while
+  // this test only needs to establish the stored identity, value, and
+  // persistence bit.
+  return actual.IsEquivalent(expected) && actual.Value() == expected.Value() &&
+         actual.IsPersistent();
+}
+
 // Records metrics around the age in hours of a cookie loaded from the store via
 // MakeCookiesFromSQLStatement for use by some browser context.
 void HistogramCookieAge(const net::CanonicalCookie& cookie) {
@@ -394,6 +404,10 @@ class SQLitePersistentCookieStore::Backend
 
   size_t GetQueueLengthForTesting();
 
+  void VerifyCookiePersistedForTesting(
+      const CanonicalCookie& expected_cookie,
+      base::OnceCallback<void(bool)> callback);
+
   // Post background delete of all cookies that match |cookies|.
   void DeleteAllInList(const std::list<CookieOrigin>& cookies);
 
@@ -475,6 +489,18 @@ class SQLitePersistentCookieStore::Backend
   void DeleteSessionCookiesOnStartup();
 
   void BackgroundDeleteAllInList(const std::list<CookieOrigin>& cookies);
+
+  using PersistentCookieReadbackCallbackData =
+      base::RefCountedData<base::OnceCallback<void(bool)>>;
+
+  // Reads a single canonical cookie row on the existing SQLite backend
+  // sequence, then delivers the result on the client sequence.
+  void VerifyCookiePersistedInBackground(
+      CanonicalCookie expected_cookie,
+      scoped_refptr<PersistentCookieReadbackCallbackData> callback_data);
+  void NotifyCookiePersistedForTesting(
+      scoped_refptr<PersistentCookieReadbackCallbackData> callback_data,
+      bool success);
 
   // Shared code between the different load strategies to be used after all
   // cookies have been loaded.
@@ -1391,6 +1417,89 @@ size_t SQLitePersistentCookieStore::Backend::GetQueueLengthForTesting() {
   return total;
 }
 
+void SQLitePersistentCookieStore::Backend::VerifyCookiePersistedForTesting(
+    const CanonicalCookie& expected_cookie,
+    base::OnceCallback<void(bool)> callback) {
+  DCHECK(client_task_runner()->RunsTasksInCurrentSequence());
+  DCHECK(!callback.is_null());
+
+  if (!expected_cookie.IsPersistent()) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  auto callback_data =
+      base::MakeRefCounted<PersistentCookieReadbackCallbackData>(
+          std::move(callback));
+  if (!background_task_runner()->PostTask(
+          FROM_HERE,
+          base::BindOnce(&Backend::VerifyCookiePersistedInBackground, this,
+                         expected_cookie, callback_data))) {
+    LOG(WARNING) << "Failed to post persistent cookie readback task from "
+                 << FROM_HERE.ToString() << " to background_task_runner().";
+    std::move(callback_data->data).Run(false);
+  }
+}
+
+void SQLitePersistentCookieStore::Backend::VerifyCookiePersistedInBackground(
+    CanonicalCookie expected_cookie,
+    scoped_refptr<PersistentCookieReadbackCallbackData> callback_data) {
+  DCHECK(background_task_runner()->RunsTasksInCurrentSequence());
+
+  bool success = false;
+  if (db() && expected_cookie.IsPersistent()) {
+    base::expected<CookiePartitionKey::SerializedCookiePartitionKey,
+                   std::string>
+        serialized_partition_key =
+            CookiePartitionKey::Serialize(expected_cookie.PartitionKey());
+    if (serialized_partition_key.has_value()) {
+      sql::Statement statement(db()->GetCachedStatement(
+          SQL_FROM_HERE,
+          "SELECT creation_utc, host_key, top_frame_site_key, name, value, "
+          "path, expires_utc, is_secure, is_httponly, last_access_utc, "
+          "has_expires, is_persistent, priority, encrypted_value, samesite, "
+          "source_scheme, source_port, last_update_utc, source_type, "
+          "has_cross_site_ancestor FROM cookies WHERE name = ? AND "
+          "host_key = ? AND top_frame_site_key = ? AND path = ? AND "
+          "source_scheme = ? AND source_port = ? AND "
+          "has_cross_site_ancestor = ? AND is_persistent = 1 LIMIT 2"));
+      if (statement.is_valid()) {
+        statement.BindString(0, expected_cookie.Name());
+        statement.BindString(1, expected_cookie.Domain());
+        statement.BindString(2, serialized_partition_key->TopLevelSite());
+        statement.BindString(3, expected_cookie.Path());
+        statement.BindInt(4,
+                          static_cast<int>(expected_cookie.SourceScheme()));
+        statement.BindInt(5, expected_cookie.SourcePort());
+        statement.BindBool(6,
+                           serialized_partition_key->has_cross_site_ancestor());
+
+        std::vector<std::unique_ptr<CanonicalCookie>> cookies;
+        absl::flat_hash_set<std::string> top_frame_site_keys_to_delete;
+        const bool read_succeeded = MakeCookiesFromSQLStatement(
+            cookies, statement, top_frame_site_keys_to_delete);
+        success = statement.Succeeded() && read_succeeded &&
+                  cookies.size() == 1u &&
+                  MatchesPersistentCookieReadback(expected_cookie, *cookies[0]);
+      }
+    }
+  }
+
+  PostClientTask(
+      FROM_HERE,
+      base::BindOnce(&Backend::NotifyCookiePersistedForTesting, this,
+                     std::move(callback_data), success));
+}
+
+void SQLitePersistentCookieStore::Backend::NotifyCookiePersistedForTesting(
+    scoped_refptr<PersistentCookieReadbackCallbackData> callback_data,
+    bool success) {
+  DCHECK(client_task_runner()->RunsTasksInCurrentSequence());
+  if (callback_data->data) {
+    std::move(callback_data->data).Run(success);
+  }
+}
+
 void SQLitePersistentCookieStore::Backend::DeleteAllInList(
     const std::list<CookieOrigin>& cookies) {
   if (cookies.empty())
@@ -1553,6 +1662,13 @@ void SQLitePersistentCookieStore::Flush(base::OnceClosure callback) {
 
 void SQLitePersistentCookieStore::CloseForTesting(base::OnceClosure callback) {
   backend_->Close(std::move(callback));
+}
+
+void SQLitePersistentCookieStore::VerifyCookiePersistedForTesting(
+    const CanonicalCookie& expected_cookie,
+    base::OnceCallback<void(bool)> callback) {
+  backend_->VerifyCookiePersistedForTesting(expected_cookie,
+                                            std::move(callback));
 }
 
 size_t SQLitePersistentCookieStore::GetQueueLengthForTesting() {

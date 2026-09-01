@@ -128,6 +128,18 @@ void SessionCleanupCookieStore::Flush(base::OnceClosure callback) {
   persistent_store_->Flush(std::move(callback));
 }
 
+void SessionCleanupCookieStore::VerifyPersistentCookieStoreReadbackForTesting(
+    const net::CanonicalCookie& expected_cookie,
+    base::OnceCallback<void(bool)> callback) {
+  if (!persistent_store_ || persistent_store_closed_for_testing_ ||
+      !expected_cookie.IsPersistent()) {
+    std::move(callback).Run(false);
+    return;
+  }
+  persistent_store_->VerifyCookiePersistedForTesting(expected_cookie,
+                                                       std::move(callback));
+}
+
 void SessionCleanupCookieStore::ClosePersistentStoreForTesting(
     base::OnceCallback<void(bool)> callback) {
   if (!persistent_store_ || persistent_store_closed_for_testing_) {

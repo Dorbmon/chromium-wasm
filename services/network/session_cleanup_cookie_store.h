@@ -55,6 +55,13 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) SessionCleanupCookieStore
   void SetBeforeCommitCallback(base::RepeatingClosure callback) override;
   void Flush(base::OnceClosure callback) override;
 
+  // Test-only persistent-store readback. This reads the selected SQLite
+  // backend directly, not CookieMonster's in-memory cache. Callers must have
+  // serialized a flush before this operation and must not call it after close.
+  void VerifyPersistentCookieStoreReadbackForTesting(
+      const net::CanonicalCookie& expected_cookie,
+      base::OnceCallback<void(bool)> callback);
+
   // Test-only close fence for a persistent cookie store. The callback runs
   // only after its SQLite backend has closed on its background sequence.
   void ClosePersistentStoreForTesting(base::OnceCallback<void(bool)> callback);
