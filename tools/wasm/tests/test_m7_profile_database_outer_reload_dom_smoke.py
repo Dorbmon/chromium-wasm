@@ -388,6 +388,21 @@ class M7ProfileDatabaseOuterReloadDomSmokeTest(unittest.TestCase):
         )
         self.assertEqual(headers.get("x-content-type-options"), "nosniff")
 
+    def test_output_configuration_rejects_sqlite_recovery_artifact(self) -> None:
+        valid = (
+            b"enable_chromium_wasm_m7_profile_database_test=true\n"
+            b"enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic=false\n"
+            b"enable_chromium_wasm_m7_profile_database_sqlite_recovery_test=false\n"
+        )
+        smoke.validate_m7_output_configuration(valid)
+        with self.assertRaises(M0Error):
+            smoke.validate_m7_output_configuration(
+                valid.replace(
+                    b"enable_chromium_wasm_m7_profile_database_sqlite_recovery_test=false",
+                    b"enable_chromium_wasm_m7_profile_database_sqlite_recovery_test=true",
+                )
+            )
+
     def test_escrow_requires_document_evidence_and_both_phase_two_gates(self) -> None:
         escrow = smoke.new_token_escrow()
         state = smoke.OuterReloadSession(

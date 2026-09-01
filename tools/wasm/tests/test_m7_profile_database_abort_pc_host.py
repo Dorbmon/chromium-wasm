@@ -103,6 +103,7 @@ class M7ProfileDatabaseAbortPcHostTest(unittest.TestCase):
         diagnostic_args = (
             b"enable_chromium_wasm_m7_profile_database_test=true\n"
             b"enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic=true\n"
+            b"enable_chromium_wasm_m7_profile_database_sqlite_recovery_test=false\n"
         )
         smoke.validate_m7_output_configuration(
             diagnostic_args, diagnostic_mode=smoke.DIAGNOSTIC_MODE_ABORT_PC
@@ -110,6 +111,14 @@ class M7ProfileDatabaseAbortPcHostTest(unittest.TestCase):
         with self.assertRaises(M0Error):
             smoke.validate_m7_output_configuration(
                 diagnostic_args, diagnostic_mode=smoke.DIAGNOSTIC_MODE_NORMAL
+            )
+        with self.assertRaises(M0Error):
+            smoke.validate_m7_output_configuration(
+                diagnostic_args.replace(
+                    b"enable_chromium_wasm_m7_profile_database_sqlite_recovery_test=false",
+                    b"enable_chromium_wasm_m7_profile_database_sqlite_recovery_test=true",
+                ),
+                diagnostic_mode=smoke.DIAGNOSTIC_MODE_ABORT_PC,
             )
 
     def test_runner_snapshots_but_never_serves_symbol_sidecar(self) -> None:

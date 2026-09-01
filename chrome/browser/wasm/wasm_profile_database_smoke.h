@@ -72,6 +72,18 @@ enum class WasmProfileDatabaseSmokeMode {
 //   --wasm-profile-database-token-a=<64 lowercase hex>
 //   --wasm-profile-database-token-b=<64 lowercase hex>
 //
+// chrome_wasm_m7_profile_database_sqlite_recovery_test is another distinct,
+// source-selected artifact. It accepts only the ordinary SQLite A seed and
+// these two controlled-boundary modes:
+//
+//   --wasm-profile-database-smoke=interrupt-sqlite-write-b
+//   --wasm-profile-database-token-a=<64 lowercase hex>
+//   --wasm-profile-database-token-b=<64 lowercase hex>
+//
+//   --wasm-profile-database-smoke=recover-sqlite-write-b
+//   --wasm-profile-database-token-a=<64 lowercase hex>
+//   --wasm-profile-database-token-b=<64 lowercase hex>
+//
 // In verify-a-write-b mode token B must differ from token A. The raw tokens
 // remain inside database files below the profile's Default directory and never
 // leave this process in a marker, diagnostic, database status string, or path.
@@ -199,6 +211,37 @@ enum class WasmProfileDatabaseSmokeMode {
 //   CHROMIUM_WASM_M7_DATABASE:RECOVERY_DATABASES_CLOSED
 //   CHROMIUM_WASM_M7_DATABASE:RECOVERY_FENCE_OK
 //   CHROMIUM_WASM_M7_DATABASE:RECOVERY_LEASE_RELEASED
+
+// The separate SQLite recovery artifact has an equally narrow but different
+// receipt. Its first fresh module writes and independently closes/reopens
+// SQLite A using Chrome's normal VFS. Its second fresh module first reads that
+// committed A value normally, then opens only its target SQLite connection via
+// a private, non-default forwarding VFS. The connection uses normal advisory
+// locking, a TRUNCATE rollback journal, mmap disabled, and SQLite's FULL
+// synchronous setting. After its B statement succeeds, that VFS is armed
+// immediately before the real Transaction::Commit(). It forwards the selected
+// main-database xSync() to Chromium's default VFS first and aborts only after
+// that call returns SQLITE_OK. Its third fresh module requires the existing
+// file, then independently opens, FullIntegrityChecks, closes, and repeats
+// that recovery read; both outcomes must stably be the exact A or B token.
+// Its fixed markers are:
+//
+//   CHROMIUM_WASM_M7_DATABASE:RECOVERY_LEASE_REACQUIRED
+//   CHROMIUM_WASM_M7_DATABASE:SQLITE_RECOVERY_SEED_A_FULL_INTEGRITY_OK sha256=<digest-a>
+//   CHROMIUM_WASM_M7_DATABASE:SQLITE_RECOVERY_READ_A_OK sha256=<digest-a>
+//   CHROMIUM_WASM_M7_DATABASE:SQLITE_ROLLBACK_JOURNAL_COMMIT_B_ARMED sha256=<digest-b>
+//   CHROMIUM_WASM_M7_DATABASE_PHASE:sqlite-write-main-db-sync-returned
+//   CHROMIUM_WASM_M7_DATABASE:SQLITE_RECOVERY_A_FULL_INTEGRITY_OK sha256=<digest-a>
+//   CHROMIUM_WASM_M7_DATABASE:SQLITE_RECOVERY_B_FULL_INTEGRITY_OK sha256=<digest-b>
+//   CHROMIUM_WASM_M7_DATABASE:RECOVERY_DATABASES_CLOSED
+//   CHROMIUM_WASM_M7_DATABASE:RECOVERY_FENCE_OK
+//   CHROMIUM_WASM_M7_DATABASE:RECOVERY_LEASE_RELEASED
+//
+// This proves only a source-selected, controlled interruption after a
+// successful SQLite main-database xSync and before Commit() returns. It does
+// not prove physical crash or power-loss behavior, directory durability,
+// cross-store atomicity, general SQLite interruption recovery, a concurrent
+// normal Chromium profile, normal-profile persistence, or M7 completion.
 
 // True when any switch in the dedicated database protocol is present. This
 // includes orphaned token switches so ChromeMain fails them before ordinary

@@ -188,6 +188,7 @@ class M7ProfileDatabaseLockContractTest(unittest.TestCase):
                 b"enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic=false",
                 b"enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic=false",
                 b"enable_chromium_wasm_m7_profile_database_recovery_test=false",
+                b"enable_chromium_wasm_m7_profile_database_sqlite_recovery_test=false",
             )
         )
         runner.validate_m7_output_configuration(valid)
@@ -209,6 +210,14 @@ class M7ProfileDatabaseLockContractTest(unittest.TestCase):
                 )
                 with self.assertRaises(runner.M0Error):
                     runner.validate_m7_output_configuration(changed)
+
+        with self.assertRaises(runner.M0Error):
+            runner.validate_m7_output_configuration(
+                valid.replace(
+                    b"enable_chromium_wasm_m7_profile_database_sqlite_recovery_test=false",
+                    b"enable_chromium_wasm_m7_profile_database_sqlite_recovery_test=true",
+                )
+            )
 
         token = "a" * 64
         escrow = runner.TokenEscrow(

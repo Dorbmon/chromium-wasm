@@ -112,6 +112,11 @@ M7_DATABASE_ABORT_PC_GN_ENABLE_ASSIGNMENT_RE = re.compile(
     r"[ \t]*=[ \t]*(true|false)[ \t]*(?:#.*)?$",
     re.MULTILINE,
 )
+M7_DATABASE_SQLITE_RECOVERY_GN_ENABLE_ASSIGNMENT_RE = re.compile(
+    r"^[ \t]*enable_chromium_wasm_m7_profile_database_sqlite_recovery_test"
+    r"[ \t]*=[ \t]*(true|false)[ \t]*(?:#.*)?$",
+    re.MULTILINE,
+)
 
 M7_DATABASE_MARKER_PREFIX = "CHROMIUM_WASM_M7_DATABASE:"
 M7_DATABASE_PHASE_PREFIX = "CHROMIUM_WASM_M7_DATABASE_PHASE:"
@@ -997,12 +1002,19 @@ def validate_m7_output_configuration(args_gn: bytes) -> None:
     database_values = M7_DATABASE_GN_ENABLE_ASSIGNMENT_RE.findall(text)
     diagnostic_values = M7_WRITE_INTERRUPTION_GN_ENABLE_ASSIGNMENT_RE.findall(text)
     abort_pc_values = M7_DATABASE_ABORT_PC_GN_ENABLE_ASSIGNMENT_RE.findall(text)
+    sqlite_recovery_values = (
+        M7_DATABASE_SQLITE_RECOVERY_GN_ENABLE_ASSIGNMENT_RE.findall(text)
+    )
     if not database_values or any(value != "true" for value in database_values):
         raise M0Error("write-interruption args.gn lacks the database test opt-in")
     if not diagnostic_values or any(value != "true" for value in diagnostic_values):
         raise M0Error("write-interruption args.gn lacks its diagnostic opt-in")
     if any(value == "true" for value in abort_pc_values):
         raise M0Error("write-interruption args.gn enables an incompatible diagnostic")
+    if any(value == "true" for value in sqlite_recovery_values):
+        raise M0Error(
+            "write-interruption args.gn enables the separate SQLite recovery artifact"
+        )
 
 
 def create_server(

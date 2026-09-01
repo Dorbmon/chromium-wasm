@@ -113,6 +113,11 @@ M7_DATABASE_RECOVERY_GN_ENABLE_ASSIGNMENT_RE = re.compile(
     r"[ \t]*=[ \t]*(true|false)[ \t]*(?:#.*)?$",
     re.MULTILINE,
 )
+M7_DATABASE_SQLITE_RECOVERY_GN_ENABLE_ASSIGNMENT_RE = re.compile(
+    r"^[ \t]*enable_chromium_wasm_m7_profile_database_sqlite_recovery_test"
+    r"[ \t]*=[ \t]*(true|false)[ \t]*(?:#.*)?$",
+    re.MULTILINE,
+)
 
 _BYTE_IDENTITY_FIELDS = frozenset(("bytes", "sha256"))
 _ARTIFACT_FIELDS = frozenset(
@@ -560,6 +565,7 @@ def validate_m7_output_configuration(args_gn: bytes) -> None:
         M7_DATABASE_ABORT_PC_GN_ENABLE_ASSIGNMENT_RE.findall(text)
         + M7_DATABASE_WRITE_INTERRUPTION_GN_ENABLE_ASSIGNMENT_RE.findall(text)
         + M7_DATABASE_RECOVERY_GN_ENABLE_ASSIGNMENT_RE.findall(text)
+        + M7_DATABASE_SQLITE_RECOVERY_GN_ENABLE_ASSIGNMENT_RE.findall(text)
     )
     if not database_values or any(value != "true" for value in database_values):
         raise M0Error("lock args.gn lacks the database test opt-in")

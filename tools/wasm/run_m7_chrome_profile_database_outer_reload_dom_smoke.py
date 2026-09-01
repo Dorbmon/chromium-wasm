@@ -135,6 +135,11 @@ M7_DATABASE_ABORT_PC_GN_ENABLE_ASSIGNMENT_RE = re.compile(
     r"[ \t]*=[ \t]*(true|false)[ \t]*(?:#.*)?$",
     re.MULTILINE,
 )
+M7_DATABASE_SQLITE_RECOVERY_GN_ENABLE_ASSIGNMENT_RE = re.compile(
+    r"^[ \t]*enable_chromium_wasm_m7_profile_database_sqlite_recovery_test"
+    r"[ \t]*=[ \t]*(true|false)[ \t]*(?:#.*)?$",
+    re.MULTILINE,
+)
 
 M7_DATABASE_MARKER_PREFIX = "CHROMIUM_WASM_M7_DATABASE:"
 M7_DATABASE_PHASE_PREFIX = "CHROMIUM_WASM_M7_DATABASE_PHASE:"
@@ -1127,6 +1132,11 @@ def validate_m7_output_configuration(args_gn: bytes) -> None:
     diagnostic_values = M7_DATABASE_ABORT_PC_GN_ENABLE_ASSIGNMENT_RE.findall(text)
     if any(value == "true" for value in diagnostic_values):
         raise M0Error("outer-reload args.gn enables an unsupported diagnostic")
+    sqlite_recovery_values = (
+        M7_DATABASE_SQLITE_RECOVERY_GN_ENABLE_ASSIGNMENT_RE.findall(text)
+    )
+    if any(value == "true" for value in sqlite_recovery_values):
+        raise M0Error("outer-reload args.gn enables the SQLite recovery artifact")
 
 
 def create_server(

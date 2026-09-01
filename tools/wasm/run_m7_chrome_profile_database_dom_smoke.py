@@ -113,6 +113,11 @@ M7_DATABASE_ABORT_PC_GN_ENABLE_ASSIGNMENT_RE = re.compile(
     r"[ \t]*=[ \t]*(true|false)[ \t]*(?:#.*)?$",
     re.MULTILINE,
 )
+M7_DATABASE_SQLITE_RECOVERY_GN_ENABLE_ASSIGNMENT_RE = re.compile(
+    r"^[ \t]*enable_chromium_wasm_m7_profile_database_sqlite_recovery_test"
+    r"[ \t]*=[ \t]*(true|false)[ \t]*(?:#.*)?$",
+    re.MULTILINE,
+)
 M7_DATABASE_MARKER_PREFIX = "CHROMIUM_WASM_M7_DATABASE:"
 # Failure-only fixed database-task telemetry. It is never an acceptance
 # marker and successful evidence must not contain its prefix.
@@ -766,6 +771,14 @@ def validate_m7_output_configuration(
             "enable_chromium_wasm_m7_profile_database_test=true"
         )
     abort_pc_values = M7_DATABASE_ABORT_PC_GN_ENABLE_ASSIGNMENT_RE.findall(text)
+    sqlite_recovery_values = (
+        M7_DATABASE_SQLITE_RECOVERY_GN_ENABLE_ASSIGNMENT_RE.findall(text)
+    )
+    if any(value == "true" for value in sqlite_recovery_values):
+        raise M0Error(
+            "profile database args.gn enables the separate SQLite recovery "
+            "artifact"
+        )
     if diagnostic_mode == DIAGNOSTIC_MODE_ABORT_PC:
         if not abort_pc_values or any(value != "true" for value in abort_pc_values):
             raise M0Error(

@@ -1203,6 +1203,7 @@ delete globalThis.__lifecycleFactoryCalls;
         smoke.validate_m7_output_configuration(
             b'import("//out/wasm-chrome-m6/args.gn")\n'
             b"enable_chromium_wasm_m7_profile_database_test = true\n"
+            b"enable_chromium_wasm_m7_profile_database_sqlite_recovery_test = false\n"
         )
         for args_gn in (
             b"",
@@ -1210,6 +1211,8 @@ delete globalThis.__lifecycleFactoryCalls;
             b"# enable_chromium_wasm_m7_profile_database_test = true\n",
             b"enable_chromium_wasm_m7_profile_database_test = true\n"
             b"enable_chromium_wasm_m7_profile_database_test = false\n",
+            b"enable_chromium_wasm_m7_profile_database_test = true\n"
+            b"enable_chromium_wasm_m7_profile_database_sqlite_recovery_test = true\n",
         ):
             with self.subTest(args_gn=args_gn):
                 with self.assertRaises(M0Error):

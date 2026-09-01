@@ -435,8 +435,17 @@ class M7ProfileDatabaseWriteInterruptionDomSmokeTest(unittest.TestCase):
             (
                 "enable_chromium_wasm_m7_profile_database_test=true\n"
                 "enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic=true\n"
+                "enable_chromium_wasm_m7_profile_database_sqlite_recovery_test=false\n"
             ).encode("utf-8")
         )
+        with self.assertRaises(M0Error):
+            smoke.validate_m7_output_configuration(
+                (
+                    "enable_chromium_wasm_m7_profile_database_test=true\n"
+                    "enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic=true\n"
+                    "enable_chromium_wasm_m7_profile_database_sqlite_recovery_test=true\n"
+                ).encode("utf-8")
+            )
 
 
 if __name__ == "__main__":

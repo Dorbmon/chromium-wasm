@@ -187,6 +187,7 @@ class M7ProfileDatabaseRecoveryContractTest(unittest.TestCase):
                 b"enable_chromium_wasm_m7_profile_database_recovery_test=true",
                 b"enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic=false",
                 b"enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic=false",
+                b"enable_chromium_wasm_m7_profile_database_sqlite_recovery_test=false",
             )
         )
         runner.validate_m7_output_configuration(valid)
@@ -195,6 +196,13 @@ class M7ProfileDatabaseRecoveryContractTest(unittest.TestCase):
                 valid.replace(
                     b"enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic=false",
                     b"enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic=true",
+                )
+            )
+        with self.assertRaises(runner.M0Error):
+            runner.validate_m7_output_configuration(
+                valid.replace(
+                    b"enable_chromium_wasm_m7_profile_database_sqlite_recovery_test=false",
+                    b"enable_chromium_wasm_m7_profile_database_sqlite_recovery_test=true",
                 )
             )
 

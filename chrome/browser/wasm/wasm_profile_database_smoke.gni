@@ -28,6 +28,16 @@ declare_args() {
   # normal-profile persistence, or M7 completion.
   enable_chromium_wasm_m7_profile_database_recovery_test = false
 
+  # This bounded recovery probe is a distinct fresh artifact for SQLite's
+  # rollback-journal main-database commit boundary. It forwards a real
+  # main-database xSync() through a private non-default VFS, then aborts only
+  # after that call returns SQLITE_OK. A fresh module accepts only a stable A
+  # or B SQLite value after two full-integrity close/reopens. It deliberately
+  # does not claim physical crash behavior, power-loss behavior, directory
+  # durability, cross-store atomicity, normal-profile persistence, or M7
+  # completion.
+  enable_chromium_wasm_m7_profile_database_sqlite_recovery_test = false
+
   # This source-selected acceptance opens a real Chromium LevelDB holder,
   # requires a same-process contender to be rejected, then proves the holder's
   # explicit destruction releases the lock for a paranoid checksum reopen. It
@@ -64,6 +74,9 @@ assert(
 assert(!enable_chromium_wasm_m7_profile_database_recovery_test ||
            enable_chromium_wasm_m7_profile_database_test,
        "M7 database recovery probe requires the M7 database smoke configuration")
+assert(!enable_chromium_wasm_m7_profile_database_sqlite_recovery_test ||
+           enable_chromium_wasm_m7_profile_database_test,
+       "M7 SQLite recovery probe requires the M7 database smoke configuration")
 assert(!enable_chromium_wasm_m7_profile_database_lock_test ||
            enable_chromium_wasm_m7_profile_database_test,
        "M7 database lock probe requires the M7 database smoke configuration")
@@ -79,19 +92,29 @@ assert(
       enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic) &&
         !(enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic &&
           enable_chromium_wasm_m7_profile_database_recovery_test) &&
+        !(enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic &&
+          enable_chromium_wasm_m7_profile_database_sqlite_recovery_test) &&
         !(enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic &&
           enable_chromium_wasm_m7_profile_database_recovery_test) &&
+        !(enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic &&
+          enable_chromium_wasm_m7_profile_database_sqlite_recovery_test) &&
         !(enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic &&
           enable_chromium_wasm_m7_profile_database_lock_test) &&
         !(enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic &&
           enable_chromium_wasm_m7_profile_database_lock_test) &&
         !(enable_chromium_wasm_m7_profile_database_recovery_test &&
           enable_chromium_wasm_m7_profile_database_lock_test) &&
+        !(enable_chromium_wasm_m7_profile_database_recovery_test &&
+          enable_chromium_wasm_m7_profile_database_sqlite_recovery_test) &&
+        !(enable_chromium_wasm_m7_profile_database_sqlite_recovery_test &&
+          enable_chromium_wasm_m7_profile_database_lock_test) &&
         !(enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic &&
           enable_chromium_wasm_m7_profile_database_sqlite_lock_test) &&
         !(enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic &&
           enable_chromium_wasm_m7_profile_database_sqlite_lock_test) &&
         !(enable_chromium_wasm_m7_profile_database_recovery_test &&
+          enable_chromium_wasm_m7_profile_database_sqlite_lock_test) &&
+        !(enable_chromium_wasm_m7_profile_database_sqlite_recovery_test &&
           enable_chromium_wasm_m7_profile_database_sqlite_lock_test) &&
         !(enable_chromium_wasm_m7_profile_database_lock_test &&
           enable_chromium_wasm_m7_profile_database_sqlite_lock_test) &&
@@ -100,6 +123,8 @@ assert(
         !(enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic &&
           enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) &&
         !(enable_chromium_wasm_m7_profile_database_recovery_test &&
+          enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) &&
+        !(enable_chromium_wasm_m7_profile_database_sqlite_recovery_test &&
           enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) &&
         !(enable_chromium_wasm_m7_profile_database_lock_test &&
           enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) &&
@@ -130,6 +155,12 @@ if (enable_chromium_wasm_m7_profile_database_test) {
     _m7_database_output_message =
         "M7 database recovery probe must use " +
         "out/wasm-chrome-m7-profile-database-recovery"
+  } else if (enable_chromium_wasm_m7_profile_database_sqlite_recovery_test) {
+    _m7_database_output_dir =
+        "wasm-chrome-m7-profile-database-sqlite-recovery"
+    _m7_database_output_message =
+        "M7 SQLite recovery probe must use " +
+        "out/wasm-chrome-m7-profile-database-sqlite-recovery"
   } else if (enable_chromium_wasm_m7_profile_database_lock_test) {
     _m7_database_output_dir = "wasm-chrome-m7-profile-database-lock"
     _m7_database_output_message =

@@ -2319,6 +2319,13 @@ if (enable_chromium_wasm_m7_profile_database_test ||
 
     sources = [ "wasm_profile_database_smoke.cc" ]
 
+    if (enable_chromium_wasm_m7_profile_database_sqlite_recovery_test) {
+      # This private forwarding VFS is compiled only into the separately
+      # source-selected SQLite recovery artifact. It never enters normal
+      # Chrome, the normal M7 database probe, or the LevelDB recovery probe.
+      sources += [ "wasm_profile_database_sqlite_recovery_vfs.cc" ]
+    }
+
     public_deps = [ ":wasm_profile_ordered_drain_lifecycle" ]
 
     if (enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
@@ -2349,6 +2356,12 @@ if (enable_chromium_wasm_m7_profile_database_test ||
       defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST=1" ]
     }
 
+    if (enable_chromium_wasm_m7_profile_database_sqlite_recovery_test) {
+      # The SQLite recovery witness selects one private VFS for the one
+      # interrupting connection. It does not alter SQLite's default VFS.
+      defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST=1" ]
+    }
+
     if (enable_chromium_wasm_m7_profile_database_lock_test) {
       # The lock probe must not accept the ordinary database modes: it is a
       # distinct, source-selected LevelDB contention/release receipt.
@@ -2375,6 +2388,10 @@ if (enable_chromium_wasm_m7_profile_database_test ||
       "//sql",
       "//third_party/leveldatabase",
     ]
+
+    if (enable_chromium_wasm_m7_profile_database_sqlite_recovery_test) {
+      deps += [ "//third_party/sqlite" ]
+    }
   }
 }
 

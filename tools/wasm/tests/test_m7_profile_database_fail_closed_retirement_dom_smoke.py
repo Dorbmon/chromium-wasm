@@ -211,6 +211,13 @@ class M7ProfileDatabaseFailClosedRetirementDomSmokeTest(unittest.TestCase):
                 ).encode("utf-8"),
                 "incompatible diagnostic",
             ),
+            (
+                (
+                    runner.PRODUCT_GN_ENABLE_ARGUMENT
+                    + "\nenable_chromium_wasm_m7_profile_database_sqlite_recovery_test=true\n"
+                ).encode("utf-8"),
+                "incompatible diagnostic",
+            ),
         ):
             with self.subTest(args_gn=args_gn):
                 with self.assertRaisesRegex(M0Error, fragment):

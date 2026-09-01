@@ -16,6 +16,7 @@
 
 #include "base/check.h"
 #include "base/command_line.h"
+#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
@@ -27,6 +28,9 @@
 #include "base/task/thread_pool.h"
 #include "base/threading/platform_thread.h"
 #include "build/build_config.h"
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+#include "chrome/browser/wasm/wasm_profile_database_sqlite_recovery_vfs.h"
+#endif
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST)
 #include "chrome/browser/wasm/wasm_profile_storage.h"
 #endif
@@ -72,6 +76,10 @@ constexpr char kObserveLevelDBWriteBMode[] = "observe-leveldb-write-b";
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
 constexpr char kRecoverLevelDBWriteBMode[] = "recover-leveldb-write-b";
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+constexpr char kInterruptSqliteWriteBMode[] = "interrupt-sqlite-write-b";
+constexpr char kRecoverSqliteWriteBMode[] = "recover-sqlite-write-b";
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
 constexpr size_t kOpaqueTokenLength = 64;
 
 constexpr char kSQLiteFilename[] = "m7_profile_database_smoke.sqlite";
@@ -113,6 +121,10 @@ enum class SmokeMode {
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
   kRecoverLevelDBWriteB,
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+  kInterruptSqliteWriteB,
+  kRecoverSqliteWriteB,
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
 };
 
 enum class DatabaseTaskResult {
@@ -162,6 +174,9 @@ enum class DatabaseTaskPhase {
     defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
   kLevelDBWriteLogSyncReturned,
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+  kSQLiteWriteMainDbSyncReturned,
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
   kTaskComplete,
 };
 
@@ -236,6 +251,10 @@ const char* DatabaseTaskPhaseName(DatabaseTaskPhase phase) {
     case DatabaseTaskPhase::kLevelDBWriteLogSyncReturned:
       return "leveldb-write-log-sync-returned";
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+    case DatabaseTaskPhase::kSQLiteWriteMainDbSyncReturned:
+      return "sqlite-write-main-db-sync-returned";
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
     case DatabaseTaskPhase::kTaskComplete:
       return "task-complete";
   }
@@ -786,13 +805,14 @@ std::string DigestToken(std::string_view token) {
 }
 
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || \
-    defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
 void EmitDatabaseDigestMarker(const char* marker, std::string_view digest) {
   std::fprintf(stderr, "%s%s sha256=%.*s\n", kMarkerPrefix, marker,
                static_cast<int>(digest.size()), digest.data());
   std::fflush(stderr);
 }
-#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+#endif  // source-selected recovery or write-interruption artifact.
 
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
 enum class PostSyncObservation {
@@ -842,8 +862,9 @@ sql::DatabaseOptions DatabaseOptionsForSmoke() {
   sql::DatabaseOptions options;
   // This deliberately exercises SQLite's normal advisory locking path. The
   // test does not use exclusive locking or WAL as a way to bypass it. Keep
-  // mmap disabled and SQLite's normal sync behavior enabled so this remains a
-  // deterministic graceful-close/reopen check, not a crash-recovery claim.
+  // mmap disabled and SQLite's normal sync behavior enabled. Individual
+  // source-selected artifacts may add a controlled interruption boundary, but
+  // these options themselves never claim a physical crash-recovery model.
   options.set_exclusive_locking(false)
       .set_wal_mode(false)
       .set_mmap_enabled(false)
@@ -942,6 +963,168 @@ bool ReadSqliteTokenAndVerifyAfterClose(const base::FilePath& database_path,
   return ReadSqliteToken(database_path, token) &&
          ReadSqliteToken(database_path, token);
 }
+
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+bool ReadSqliteRecoveryTextPragma(sql::Database* database,
+                                  base::cstring_view pragma,
+                                  std::string_view expected_value) {
+  sql::Statement statement(database->GetUniqueStatement(pragma));
+  return statement.is_valid() && statement.Step() &&
+         std::string_view(statement.ColumnString(0)) == expected_value &&
+         !statement.Step() && statement.Succeeded();
+}
+
+bool ReadSqliteRecoveryIntegerPragma(sql::Database* database,
+                                     base::cstring_view pragma,
+                                     int64_t expected_value) {
+  sql::Statement statement(database->GetUniqueStatement(pragma));
+  return statement.is_valid() && statement.Step() &&
+         statement.ColumnInt64(0) == expected_value && !statement.Step() &&
+         statement.Succeeded();
+}
+
+bool HasSqliteRollbackJournalRecoverySettings(sql::Database* database) {
+  // Query the live connection selected for the controlled commit. This locks
+  // in normal advisory locking, a truncate rollback journal, and no mmap;
+  // the DatabaseOptions also retain SQLite's default FULL sync setting.
+  return database->Execute("PRAGMA busy_timeout=0") &&
+         ReadSqliteRecoveryTextPragma(database, "PRAGMA locking_mode",
+                                      "normal") &&
+         ReadSqliteRecoveryTextPragma(database, "PRAGMA journal_mode",
+                                      "truncate") &&
+         ReadSqliteRecoveryIntegerPragma(database, "PRAGMA mmap_size", 0) &&
+         ReadSqliteRecoveryIntegerPragma(database, "PRAGMA synchronous", 2);
+}
+
+enum class RecoveredSqliteValue {
+  kA,
+  kB,
+};
+
+std::optional<RecoveredSqliteValue> ReadRecoveredSqliteValueOnce(
+    const base::FilePath& database_path,
+    std::string_view token_a,
+    std::string_view token_b) {
+  // A recovery verifier must never create a replacement file. The prior
+  // interrupted document is required to leave the actual V4-backed SQLite
+  // database available to this fresh module.
+  if (!base::PathExists(database_path)) {
+    return std::nullopt;
+  }
+
+  sql::Database database(DatabaseOptionsForSmoke(),
+                         sql::Database::Tag("Test"));
+  database.set_error_callback(base::DoNothing());
+  std::optional<RecoveredSqliteValue> result;
+  if (database.Open(database_path)) {
+    {
+      sql::Statement statement(database.GetUniqueStatement(
+          "SELECT value FROM m7_profile_database_smoke WHERE key = ?"));
+      if (statement.is_valid()) {
+        statement.BindString(0, kDatabaseKey);
+        if (statement.Step()) {
+          const std::string value = statement.ColumnString(0);
+          if (value == token_a) {
+            result = RecoveredSqliteValue::kA;
+          } else if (value == token_b) {
+            result = RecoveredSqliteValue::kB;
+          }
+          if (result && (statement.Step() || !statement.Succeeded())) {
+            result.reset();
+          }
+        }
+      }
+    }
+    // The statement is destroyed before FullIntegrityCheck() and Close().
+    if (result && !HasHealthySQLiteIntegrity(&database)) {
+      result.reset();
+    }
+  }
+  // Explicit close gives the next verifier a separate SQLite connection and
+  // lets its recovery protocol own any rollback-journal cleanup.
+  database.Close();
+  return result;
+}
+
+std::optional<RecoveredSqliteValue> ReadRecoveredSqliteValueTwice(
+    const base::FilePath& database_path,
+    std::string_view token_a,
+    std::string_view token_b) {
+  const std::optional<RecoveredSqliteValue> first =
+      ReadRecoveredSqliteValueOnce(database_path, token_a, token_b);
+  if (!first) {
+    return std::nullopt;
+  }
+  const std::optional<RecoveredSqliteValue> second =
+      ReadRecoveredSqliteValueOnce(database_path, token_a, token_b);
+  if (!second || *second != *first) {
+    return std::nullopt;
+  }
+  return first;
+}
+
+void EmitSqliteWriteMainDbSyncReturned() {
+  EmitDatabaseTaskPhase(DatabaseTaskPhase::kSQLiteWriteMainDbSyncReturned);
+}
+
+bool InterruptSqliteWriteAfterMainDbSync(const base::FilePath& database_path,
+                                         std::string_view token_b) {
+  // This private VFS is registered only on the database task's one MayBlock
+  // runner and selected only for this one existing SQLite connection. It is
+  // not SQLite's default VFS, so neither normal Chrome nor the recovery
+  // verifier can consume its controlled abort.
+  ScopedWasmProfileDatabaseSqliteCommitInterruptionVfs interruption_vfs(
+      base::PlatformThread::CurrentId(), &EmitSqliteWriteMainDbSyncReturned);
+  sql::DatabaseOptions options = DatabaseOptionsForSmoke();
+  options.set_vfs_name_discouraged(interruption_vfs.name());
+  sql::Database database(options, sql::Database::Tag("Test"));
+  database.set_error_callback(base::DoNothing());
+  if (!database.Open(database_path) ||
+      !HasSqliteRollbackJournalRecoverySettings(&database)) {
+    database.Close();
+    return false;
+  }
+
+  {
+    sql::Transaction transaction(&database);
+    if (transaction.Begin()) {
+      sql::Statement statement(database.GetUniqueStatement(
+          "INSERT OR REPLACE INTO m7_profile_database_smoke (key, value) "
+          "VALUES (?, ?)"));
+      if (statement.is_valid()) {
+        statement.BindString(0, kDatabaseKey);
+        statement.BindString(1, token_b);
+        if (statement.Run()) {
+          // Keep the VFS unarmed through Open(), journal setup, and the B
+          // statement. The next call is the real sql::Transaction commit
+          // boundary whose main-database xSync must forward before aborting.
+          interruption_vfs.ArmForCommit();
+          // This is emitted only after the VFS is armed. Emitting a fixed
+          // stderr marker does not make a SQLite call, so no Sync can occur
+          // between arming and Transaction::Commit().
+          EmitDatabaseDigestMarker("SQLITE_ROLLBACK_JOURNAL_COMMIT_B_ARMED",
+                                   DigestToken(token_b));
+          const bool commit_returned = transaction.Commit();
+          interruption_vfs.DisarmAfterCommit();
+          // The intended VFS callback aborts before Commit() can return,
+          // whether or not SQLite would otherwise report success. Never turn
+          // an unexpected return into a clean B write or recovery result.
+          if (commit_returned) {
+            return false;
+          }
+        }
+      }
+    }
+  }
+  database.Close();
+  return false;
+}
+
+bool IsSqliteRecoveryMode(SmokeMode mode) {
+  return mode == SmokeMode::kInterruptSqliteWriteB ||
+         mode == SmokeMode::kRecoverSqliteWriteB;
+}
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
 
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
 bool ReadSqliteTextPragma(sql::Database* database,
@@ -1411,6 +1594,11 @@ DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input) {
   if (emit_task_phases) {
     EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskStarted);
   }
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+  const bool emit_task_phases = !IsSqliteRecoveryMode(input.mode);
+  if (emit_task_phases) {
+    EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskStarted);
+  }
 #elif defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
   // The lock artifacts have closed success receipts. Database-task phase
@@ -1427,6 +1615,9 @@ DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input) {
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
   std::optional<RecoveredLevelDBValue> recovered_leveldb_value;
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+  std::optional<RecoveredSqliteValue> recovered_sqlite_value;
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
   switch (input.mode) {
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
     case SmokeMode::kLockContention:
@@ -1447,11 +1638,17 @@ DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input) {
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
     case SmokeMode::kWriteA:
       EmitDatabaseTaskPhase(DatabaseTaskPhase::kSQLiteWrite);
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+      // The SQLite recovery artifact deliberately seeds only the one SQLite
+      // database whose subsequent rollback-journal commit it interrupts.
+      success = WriteSqliteTokenAndVerifyAfterClose(sqlite_path, input.token_a);
+#else
       if (WriteSqliteTokenAndVerifyAfterClose(sqlite_path, input.token_a)) {
         EmitDatabaseTaskPhase(DatabaseTaskPhase::kLevelDBWrite);
         success = WriteLevelDBTokenAndVerifyAfterClose(
             leveldb_path, input.token_a, input.leveldb_options);
       }
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
       break;
     case SmokeMode::kVerifyAWriteB:
       // Both previous-A checks occur before either B write. All four database
@@ -1499,6 +1696,22 @@ DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input) {
       break;
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
 
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+    case SmokeMode::kInterruptSqliteWriteB:
+      // This normal A reopen intentionally precedes private-VFS construction,
+      // so sql::Database has installed Chromium's default VFSWrapper before
+      // the forwarding VFS snapshots its required pathname capacity. The VFS
+      // remains unarmed through open and statement setup, then aborts only
+      // after its owner-thread main-database xSync returns SQLITE_OK.
+      if (ReadSqliteToken(sqlite_path, input.token_a)) {
+        EmitDatabaseDigestMarker("SQLITE_RECOVERY_READ_A_OK",
+                                 DigestToken(input.token_a));
+        success = InterruptSqliteWriteAfterMainDbSync(sqlite_path,
+                                                      input.token_b);
+      }
+      break;
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
     case SmokeMode::kObserveLevelDBWriteB:
       // Every fixed observation is useful controlled diagnostic output. It is
@@ -1530,13 +1743,24 @@ DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input) {
       }
       break;
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+    case SmokeMode::kRecoverSqliteWriteB:
+      // A fresh module must reopen the exact pre-existing SQLite file twice,
+      // require a stable A-or-B value, and pass FullIntegrityCheck on both
+      // independently closed connections.
+      recovered_sqlite_value = ReadRecoveredSqliteValueTwice(
+          sqlite_path, input.token_a, input.token_b);
+      success = recovered_sqlite_value.has_value();
+      break;
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
     case SmokeMode::kNone:
       break;
   }
 
   input.ClearRawTokens();
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || \
-    defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
   if (emit_task_phases) {
     EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskComplete);
   }
@@ -1554,6 +1778,14 @@ DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input) {
     return DatabaseTaskResult::kRecoveryB;
   }
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+  if (success && recovered_sqlite_value == RecoveredSqliteValue::kA) {
+    return DatabaseTaskResult::kRecoveryA;
+  }
+  if (success && recovered_sqlite_value == RecoveredSqliteValue::kB) {
+    return DatabaseTaskResult::kRecoveryB;
+  }
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
   return success ? DatabaseTaskResult::kSuccess : DatabaseTaskResult::kFailure;
 }
 
@@ -1610,6 +1842,16 @@ class WasmProfileDatabaseSmokeState {
       return false;
     }
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+    // The private-VFS recovery artifact is likewise not a generic database
+    // executable. It admits only its seed, native-interruption, and fresh
+    // SQLite recovery modes.
+    if (mode != kWriteAMode && mode != kInterruptSqliteWriteBMode &&
+        mode != kRecoverSqliteWriteBMode) {
+      ReportFailure(WasmProfileDatabaseSmokeFailureStage::kArguments);
+      return false;
+    }
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
     if (mode == kLockContentionMode) {
       if (!has_token_a || has_token_b) {
@@ -1697,6 +1939,28 @@ class WasmProfileDatabaseSmokeState {
       // nonempty expectation solely for the existing result-bearing lifecycle
       // validation; recovered A and B are distinguished before that handoff.
       expected_digest_ = token_b_digest_;
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+    } else if (mode == kInterruptSqliteWriteBMode ||
+               mode == kRecoverSqliteWriteBMode) {
+      if (!has_token_a || !has_token_b) {
+        ReportFailure(WasmProfileDatabaseSmokeFailureStage::kArguments);
+        return false;
+      }
+      token_a_ = command_line->GetSwitchValueASCII(kTokenASwitch);
+      token_b_ = command_line->GetSwitchValueASCII(kTokenBSwitch);
+      if (!IsOpaqueToken(token_a_) || !IsOpaqueToken(token_b_) ||
+          token_a_ == token_b_) {
+        ReportFailure(WasmProfileDatabaseSmokeFailureStage::kArguments);
+        return false;
+      }
+      mode_ = mode == kInterruptSqliteWriteBMode
+                  ? SmokeMode::kInterruptSqliteWriteB
+                  : SmokeMode::kRecoverSqliteWriteB;
+      token_a_digest_ = DigestToken(token_a_);
+      token_b_digest_ = DigestToken(token_b_);
+      // Recovery terminal markers carry no raw value or digest. This private
+      // value only keeps the existing lifecycle result validation nonempty.
+      expected_digest_ = token_b_digest_;
 #elif defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
     } else if (mode == kInterruptLevelDBWriteBMode ||
                mode == kObserveLevelDBWriteBMode) {
@@ -1720,7 +1984,7 @@ class WasmProfileDatabaseSmokeState {
       // unchanged result-bearing lifecycle still requires a nonempty private
       // expectation before it can release the real profile lease.
       expected_digest_ = token_b_digest_;
-#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+#endif  // source-selected recovery or diagnostic artifact.
     } else if (mode == kVerifyBMode) {
       if (has_token_a || !has_token_b) {
         ReportFailure(WasmProfileDatabaseSmokeFailureStage::kArguments);
@@ -1755,14 +2019,15 @@ class WasmProfileDatabaseSmokeState {
     }
     started_ = true;
     EmitMarker("READY");
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
     // Start is reached only after the dedicated Chrome entry point mounted the
     // exact leased OPFS backend and BrowserMainParts admitted the profile
     // lifecycle. Each outer document constructs a fresh module, so this is a
     // fixed receipt for the test backend's fresh lease acquisition, not a
     // claim about general Chromium profile locking.
     EmitMarker("RECOVERY_LEASE_REACQUIRED");
-#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+#endif  // source-selected recovery artifact.
 
     // leveldb_env::Options initializes Chromium's shared browser block cache.
     // Do that on this UI/main sequence before this input is posted to the
@@ -1787,6 +2052,10 @@ class WasmProfileDatabaseSmokeState {
     }
 #elif defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
     if (!IsDatabaseRecoveryMode(mode_)) {
+      EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskPost);
+    }
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+    if (!IsSqliteRecoveryMode(mode_)) {
       EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskPost);
     }
 #elif defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST) || \
@@ -1835,8 +2104,13 @@ class WasmProfileDatabaseSmokeState {
         break;
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
       case SmokeMode::kWriteA:
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+        EmitDigestMarker("SQLITE_RECOVERY_SEED_A_FULL_INTEGRITY_OK",
+                         token_a_digest_);
+#else
         EmitDigestMarker("SQLITE_WRITE_ACCEPTED", token_a_digest_);
         EmitDigestMarker("LEVELDB_WRITE_ACCEPTED", token_a_digest_);
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
         break;
       case SmokeMode::kVerifyAWriteB:
         EmitDigestMarker("SQLITE_READ_A_OK", token_a_digest_);
@@ -1857,6 +2131,14 @@ class WasmProfileDatabaseSmokeState {
         break;
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
 
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+      case SmokeMode::kInterruptSqliteWriteB:
+        // The selected VFS must abort after its one post-sync phase. Any task
+        // reply would mean Commit() returned unexpectedly, not recovery proof.
+        ReportFailure(WasmProfileDatabaseSmokeFailureStage::kDatabase);
+        break;
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
       case SmokeMode::kObserveLevelDBWriteB:
         // RunDatabaseTask() already emitted exactly one fixed observation
@@ -1876,6 +2158,19 @@ class WasmProfileDatabaseSmokeState {
         EmitDigestMarker("SQLITE_RECOVERY_A_INTEGRITY_OK", token_a_digest_);
         break;
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
+      case SmokeMode::kRecoverSqliteWriteB:
+        if (result == DatabaseTaskResult::kRecoveryA) {
+          EmitDigestMarker("SQLITE_RECOVERY_A_FULL_INTEGRITY_OK",
+                           token_a_digest_);
+        } else if (result == DatabaseTaskResult::kRecoveryB) {
+          EmitDigestMarker("SQLITE_RECOVERY_B_FULL_INTEGRITY_OK",
+                           token_b_digest_);
+        } else {
+          ReportFailure(WasmProfileDatabaseSmokeFailureStage::kDatabase);
+        }
+        break;
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
       case SmokeMode::kNone:
         ReportFailure(WasmProfileDatabaseSmokeFailureStage::kDatabase);
         break;
@@ -1884,12 +2179,13 @@ class WasmProfileDatabaseSmokeState {
       return false;
     }
 
-    // RunDatabaseTask() has returned only after every SQLite and LevelDB
-    // object was explicitly closed and then destroyed on its one runner.
+    // RunDatabaseTask() has returned only after every source-selected database
+    // object was explicitly closed and destroyed on its one runner.
     databases_closed_ = true;
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
     EmitMarker("DIAGNOSTIC_DATABASES_CLOSED");
-#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
     EmitMarker("RECOVERY_DATABASES_CLOSED");
 #else
     EmitDigestMarker("DATABASES_CLOSED", expected_digest_);
@@ -1916,7 +2212,8 @@ class WasmProfileDatabaseSmokeState {
     // This artifact can cleanly release the real profile lease, but that
     // lifecycle fact is not an M7 persistence acceptance.
     EmitMarker("DIAGNOSTIC_FENCE_OK");
-#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
     EmitMarker("RECOVERY_FENCE_OK");
 #else
     EmitDigestMarker("FENCE_OK", expected_digest_);
@@ -1947,7 +2244,8 @@ class WasmProfileDatabaseSmokeState {
     lease_released_ = true;
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
     EmitMarker("DIAGNOSTIC_LEASE_RELEASED");
-#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_RECOVERY_TEST)
     EmitMarker("RECOVERY_LEASE_RELEASED");
 #else
     EmitMarker("LEASE_RELEASED");

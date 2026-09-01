@@ -632,6 +632,11 @@ if (is_wasm && enable_chromium_wasm_chrome) {
         # Its fresh output prevents its controlled abort/reopen protocol from
         # changing the ordinary M7 database graceful-close artifact.
         output_name = "chrome_wasm_m7_profile_database_recovery_test"
+      } else if (enable_chromium_wasm_m7_profile_database_sqlite_recovery_test) {
+        # This private-VFS SQLite rollback-journal recovery witness has its own
+        # fresh source closure. It deliberately adds no Emscripten fault hook:
+        # its one native abort follows the real main-database xSync callback.
+        output_name = "chrome_wasm_m7_profile_database_sqlite_recovery_test"
       } else if (enable_chromium_wasm_m7_profile_database_lock_test) {
         # This one-process LevelDB lock probe has its own source-selected
         # marker grammar. It does not change the ordinary graceful-close

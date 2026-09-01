@@ -1,0 +1,31 @@
+<!doctype html>
+<!-- Copyright 2026 The Chromium Authors
+     Use of this source code is governed by a BSD-style license that can be
+     found in the LICENSE file. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chromium Wasm M7 bounded SQLite recovery probe</title>
+<main id="m7-profile-database-sqlite-recovery-root" data-state="starting">
+  <h1>Chromium Wasm M7 bounded SQLite recovery probe</h1>
+  <dl id="m7-profile-database-sqlite-recovery-versions"></dl>
+  <canvas id="m7-profile-database-sqlite-recovery-canvas" width="1" height="1"
+      tabindex="0"
+      aria-label="Chromium Wasm bounded SQLite recovery probe canvas"></canvas>
+  <pre id="m7-profile-database-sqlite-recovery-status">starting</pre>
+</main>
+<script type="module">
+  import {runChromeWasmProfileDatabaseSqliteRecoveryFromQuery} from
+      "./chrome_wasm_profile_database_sqlite_recovery_smoke.js";
+
+  runChromeWasmProfileDatabaseSqliteRecoveryFromQuery().catch((error) => {
+    const root = document.querySelector("#m7-profile-database-sqlite-recovery-root");
+    const status = document.querySelector("#m7-profile-database-sqlite-recovery-status");
+    if (root instanceof HTMLElement) {
+      root.dataset.state = "fail";
+    }
+    if (status instanceof HTMLElement) {
+      status.textContent = "bounded SQLite recovery probe failed; details suppressed";
+    }
+    throw error;
+  });
+</script>

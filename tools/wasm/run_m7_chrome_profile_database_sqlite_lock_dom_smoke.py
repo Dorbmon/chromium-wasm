@@ -99,6 +99,7 @@ M7_INCOMPATIBLE_SELECTORS = (
     "enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic",
     "enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic",
     "enable_chromium_wasm_m7_profile_database_recovery_test",
+    "enable_chromium_wasm_m7_profile_database_sqlite_recovery_test",
     "enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test",
 )
 M7_GN_SELECTORS = (

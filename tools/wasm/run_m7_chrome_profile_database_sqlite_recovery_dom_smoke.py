@@ -3,14 +3,15 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Prove one bounded post-LevelDB-log-Sync recovery boundary.
+"""Prove one bounded SQLite rollback-journal interruption recovery boundary.
 
-This separate test passes only when its three fresh outer documents prove a
-stable pre- or post-write LevelDB value across two independently reopened,
-checksum-verified, paranoid-check handles and two SQLite A full-integrity
-controls. It is not the M7 gate: it makes no claim about physical power loss,
-directory durability, SQLite interruption recovery, cross-store atomicity,
-or normal Chromium profile persistence.
+This separate test passes only when three fresh outer documents prove a stable
+pre- or post-write SQLite value across two independently reopened,
+full-integrity-checked handles. The controlled interruption is deliberately
+narrow: a private non-default SQLite VFS forwards the real main-database
+``xSync`` and aborts only after it returns ``SQLITE_OK``. It is not the M7
+gate and makes no claim about physical crash or power-loss behavior, directory
+durability, cross-store atomicity, or normal Chromium profile persistence.
 
 The runner owns opaque token escrow. Raw token A/B values occur only in the
 body of one same-origin no-store bootstrap response per document. They never
@@ -18,15 +19,17 @@ occur in a URL, receipt, diagnostic, stdout, stderr, or failure message.
 
 Protocol:
 
-* document 1 cleanly seeds A using the dedicated bounded recovery module;
-* document 2 freshly verifies A, reports the fixed post-Sync phase, then
-  aborts without a clean terminal marker, onExit, process-exit report, or
-  lease release; phase and abort delivery have no ordering dependency;
+* document 1 cleanly seeds SQLite value A using the dedicated bounded recovery
+  module and a full-integrity check;
+* document 2 freshly verifies A, reports that the real main-database ``xSync``
+  returned, then aborts without a clean terminal marker, onExit, process-exit
+  report, or lease release; phase and abort delivery have no ordering
+  dependency;
 * only after document 2's bounded host settle receipt does the runner issue
   the actual DevTools ``Page.reload`` command;
 * document 3 is fresh, proves the test lease was reacquired, and accepts only
-  a matching A or B value from two independently reopened checksum/paranoid
-  LevelDB handles, plus SQLite A's two close/reopen full-integrity controls.
+  a stable A or B value from two independently reopened full-integrity SQLite
+  handles.
 
 Every top-level replacement requires both the server's Fetch Metadata
 ``document``/``navigate`` observation and a same-frame, changed-loader CDP
@@ -62,30 +65,34 @@ from m9_descriptor_snapshot import snapshot_regular_file, snapshot_regular_files
 from run_browser_smoke import browser_command, drain_stream, find_browser, stop_browser
 
 
-SENTINEL = "CHROMIUM_WASM_M7_CHROME_PROFILE_DATABASE_RECOVERY_DOM"
-CASE = "chrome_profile_database_recovery_m7"
+SENTINEL = "CHROMIUM_WASM_M7_CHROME_PROFILE_DATABASE_SQLITE_RECOVERY_DOM"
+CASE = "chrome_profile_database_sqlite_recovery_m7"
 SCOPE = (
     "same-origin-three-outer-documents-chrome-wasm-m7-profile-database-"
-    "bounded-leveldb-post-sync-recovery"
+    "bounded-sqlite-rollback-journal-main-db-sync-recovery"
 )
-PRODUCT_MODULE_NAME = "chrome_wasm_m7_profile_database_recovery_test"
+PRODUCT_MODULE_NAME = "chrome_wasm_m7_profile_database_sqlite_recovery_test"
 PRODUCT_GN_TARGET = "//chrome:chrome_wasm"
 PRODUCT_GN_ENABLE_ARGUMENT = (
-    "enable_chromium_wasm_m7_profile_database_recovery_test=true"
+    "enable_chromium_wasm_m7_profile_database_sqlite_recovery_test=true"
 )
-DEFAULT_OUT_DIR = Path("out/wasm-chrome-m7-profile-database-recovery")
+DEFAULT_OUT_DIR = Path("out/wasm-chrome-m7-profile-database-sqlite-recovery")
 DEFAULT_GN_ARGUMENTS = (
     'import("//out/wasm-chrome-m6/args.gn") '
     "enable_chromium_wasm_m7_profile_database_test=true "
     + PRODUCT_GN_ENABLE_ARGUMENT
 )
-HOST_ROOT = "/__m7_chrome_profile_database_recovery__"
-HOST_HTML_NAME = "chrome_wasm_profile_database_recovery_smoke.html"
-HOST_JS_NAME = "chrome_wasm_profile_database_recovery_smoke.js"
+HOST_ROOT = "/__m7_chrome_profile_database_sqlite_recovery__"
+HOST_HTML_NAME = "chrome_wasm_profile_database_sqlite_recovery_smoke.html"
+HOST_JS_NAME = "chrome_wasm_profile_database_sqlite_recovery_smoke.js"
 
 MAX_RESULT_BYTES = 512 * 1024
 MAX_READY_BYTES = 8 * 1024
 MAX_BOOTSTRAP_DOCUMENT_BYTES = 8 * 1024
+# The longest accepted fixed receipt is the SQLite seed/recovery integrity
+# marker plus one SHA-256 digest. Exact marker validation below remains the
+# actual grammar guard; this only bounds its transport representation.
+MAX_DATABASE_MARKER_CHARS = 160
 MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024 * 1024
 MAX_BROWSER_STDERR_LINES = 300
 MIN_TIMEOUT_SECONDS = 20.0
@@ -122,7 +129,7 @@ M7_DATABASE_GN_ENABLE_ASSIGNMENT_RE = re.compile(
     r"[ \t]*(true|false)[ \t]*(?:#.*)?$",
     re.MULTILINE,
 )
-M7_RECOVERY_GN_ENABLE_ASSIGNMENT_RE = re.compile(
+M7_DATABASE_LEVELDB_RECOVERY_GN_ENABLE_ASSIGNMENT_RE = re.compile(
     r"^[ \t]*enable_chromium_wasm_m7_profile_database_recovery_test"
     r"[ \t]*=[ \t]*(true|false)[ \t]*(?:#.*)?$",
     re.MULTILINE,
@@ -142,11 +149,26 @@ M7_DATABASE_SQLITE_RECOVERY_GN_ENABLE_ASSIGNMENT_RE = re.compile(
     r"[ \t]*=[ \t]*(true|false)[ \t]*(?:#.*)?$",
     re.MULTILINE,
 )
+M7_DATABASE_LOCK_GN_ENABLE_ASSIGNMENT_RE = re.compile(
+    r"^[ \t]*enable_chromium_wasm_m7_profile_database_lock_test"
+    r"[ \t]*=[ \t]*(true|false)[ \t]*(?:#.*)?$",
+    re.MULTILINE,
+)
+M7_DATABASE_SQLITE_LOCK_GN_ENABLE_ASSIGNMENT_RE = re.compile(
+    r"^[ \t]*enable_chromium_wasm_m7_profile_database_sqlite_lock_test"
+    r"[ \t]*=[ \t]*(true|false)[ \t]*(?:#.*)?$",
+    re.MULTILINE,
+)
+M7_DATABASE_OUTSTANDING_IO_GN_ENABLE_ASSIGNMENT_RE = re.compile(
+    r"^[ \t]*enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test"
+    r"[ \t]*=[ \t]*(true|false)[ \t]*(?:#.*)?$",
+    re.MULTILINE,
+)
 
 M7_DATABASE_MARKER_PREFIX = "CHROMIUM_WASM_M7_DATABASE:"
 M7_DATABASE_PHASE_PREFIX = "CHROMIUM_WASM_M7_DATABASE_PHASE:"
-INTERRUPTION_PHASE = "leveldb-write-log-sync-returned"
-RECOVERED_LEVELDB_VALUES = frozenset(("a", "b"))
+INTERRUPTION_PHASE = "sqlite-write-main-db-sync-returned"
+RECOVERED_SQLITE_VALUES = frozenset(("a", "b"))
 RECOVERY_LEASE_REACQUIRED_MARKER = (
     f"{M7_DATABASE_MARKER_PREFIX}RECOVERY_LEASE_REACQUIRED"
 )
@@ -155,10 +177,6 @@ RECOVERY_CLEAN_MARKERS = (
     f"{M7_DATABASE_MARKER_PREFIX}RECOVERY_FENCE_OK",
     f"{M7_DATABASE_MARKER_PREFIX}RECOVERY_LEASE_RELEASED",
 )
-RECOVERY_SQLITE_A_INTEGRITY_MARKER = (
-    f"{M7_DATABASE_MARKER_PREFIX}SQLITE_RECOVERY_A_INTEGRITY_OK"
-)
-
 ARTIFACT_DELIVERY = "immutable-in-memory-server-snapshot"
 ARTIFACT_SOURCE_PROVENANCE = "unverified"
 BUILD_CONFIG_PROVENANCE = "selected-out-dir-args-gn-immutable-snapshot"
@@ -227,7 +245,7 @@ _RUN_FIELDS = frozenset(
         "phaseObserved",
         "processExitCode",
         "processExitCount",
-        "recoveredLevelDBValue",
+        "recoveredSqliteValue",
         "runtimeExitCode",
         "runtimeInitialized",
         "settleComplete",
@@ -331,7 +349,7 @@ class PhaseResult:
     navigation_type: str
     time_origin: float
     module_identity: str
-    recovered_leveldb_value: str | None
+    recovered_sqlite_value: str | None
 
 
 @dataclass(frozen=True)
@@ -375,9 +393,9 @@ def _phase_mode(ordinal: int) -> str:
     if ordinal == 1:
         return "write-a"
     if ordinal == 2:
-        return "interrupt-leveldb-write-b"
+        return "interrupt-sqlite-write-b"
     if ordinal == 3:
-        return "recover-leveldb-write-b"
+        return "recover-sqlite-write-b"
     raise M0Error("recovery phase ordinal is invalid")
 
 
@@ -619,7 +637,7 @@ class RecoverySession:
         return True
 
 
-class ChromeProfileDatabaseRecoveryServer(ThreadingHTTPServer):
+class ChromeProfileDatabaseSqliteRecoveryServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
@@ -640,8 +658,8 @@ class ChromeProfileDatabaseRecoveryServer(ThreadingHTTPServer):
         return
 
 
-class ChromeProfileDatabaseRecoveryRequestHandler(BaseHTTPRequestHandler):
-    server: ChromeProfileDatabaseRecoveryServer
+class ChromeProfileDatabaseSqliteRecoveryRequestHandler(BaseHTTPRequestHandler):
+    server: ChromeProfileDatabaseSqliteRecoveryServer
 
     def log_message(self, _format: str, *_args: object) -> None:
         # No HTTP request logging: URLs contain bearer capabilities.
@@ -1026,7 +1044,9 @@ def validate_m7_output_configuration(args_gn: bytes) -> None:
     except UnicodeDecodeError as exc:
         raise M0Error("recovery args.gn is not UTF-8") from exc
     database_values = M7_DATABASE_GN_ENABLE_ASSIGNMENT_RE.findall(text)
-    recovery_values = M7_RECOVERY_GN_ENABLE_ASSIGNMENT_RE.findall(text)
+    leveldb_recovery_values = (
+        M7_DATABASE_LEVELDB_RECOVERY_GN_ENABLE_ASSIGNMENT_RE.findall(text)
+    )
     abort_pc_values = M7_DATABASE_ABORT_PC_GN_ENABLE_ASSIGNMENT_RE.findall(text)
     interruption_values = (
         M7_DATABASE_WRITE_INTERRUPTION_GN_ENABLE_ASSIGNMENT_RE.findall(text)
@@ -1034,16 +1054,29 @@ def validate_m7_output_configuration(args_gn: bytes) -> None:
     sqlite_recovery_values = (
         M7_DATABASE_SQLITE_RECOVERY_GN_ENABLE_ASSIGNMENT_RE.findall(text)
     )
+    lock_values = M7_DATABASE_LOCK_GN_ENABLE_ASSIGNMENT_RE.findall(text)
+    sqlite_lock_values = (
+        M7_DATABASE_SQLITE_LOCK_GN_ENABLE_ASSIGNMENT_RE.findall(text)
+    )
+    outstanding_io_values = (
+        M7_DATABASE_OUTSTANDING_IO_GN_ENABLE_ASSIGNMENT_RE.findall(text)
+    )
     if not database_values or any(value != "true" for value in database_values):
         raise M0Error("recovery args.gn lacks the database test opt-in")
-    if not recovery_values or any(value != "true" for value in recovery_values):
-        raise M0Error("recovery args.gn lacks its recovery-test opt-in")
-    if any(value == "true" for value in abort_pc_values):
-        raise M0Error("recovery args.gn enables an incompatible diagnostic")
-    if any(value == "true" for value in interruption_values):
-        raise M0Error("recovery args.gn enables the observation-only diagnostic")
-    if any(value == "true" for value in sqlite_recovery_values):
-        raise M0Error("recovery args.gn enables the separate SQLite recovery artifact")
+    if not sqlite_recovery_values or any(
+        value != "true" for value in sqlite_recovery_values
+    ):
+        raise M0Error("recovery args.gn lacks its SQLite recovery-test opt-in")
+    incompatible_values = (
+        abort_pc_values,
+        interruption_values,
+        leveldb_recovery_values,
+        lock_values,
+        sqlite_lock_values,
+        outstanding_io_values,
+    )
+    if any(value == "true" for values in incompatible_values for value in values):
+        raise M0Error("recovery args.gn enables an incompatible test artifact")
 
 
 def create_server(
@@ -1057,7 +1090,7 @@ def create_server(
     host_dir: Path | None = None,
     runner_source_path: Path | None = None,
     module_name: str = PRODUCT_MODULE_NAME,
-) -> ChromeProfileDatabaseRecoveryServer:
+) -> ChromeProfileDatabaseSqliteRecoveryServer:
     """Snapshot every served execution input before serving a connection."""
 
     module_name = _require_product_module_name(module_name, "server")
@@ -1085,8 +1118,8 @@ def create_server(
         maximum_bytes=MAX_SNAPSHOT_BYTES,
         description="recovery runner source",
     )
-    server = ChromeProfileDatabaseRecoveryServer(
-        (host, port), ChromeProfileDatabaseRecoveryRequestHandler
+    server = ChromeProfileDatabaseSqliteRecoveryServer(
+        (host, port), ChromeProfileDatabaseSqliteRecoveryRequestHandler
     )
     server.args_gn = args_gn
     server.artifacts = artifacts
@@ -1106,7 +1139,7 @@ def _byte_identity(contents: bytes) -> dict[str, object]:
 
 
 def artifact_identity(
-    server: ChromeProfileDatabaseRecoveryServer,
+    server: ChromeProfileDatabaseSqliteRecoveryServer,
     *,
     module_name: str = PRODUCT_MODULE_NAME,
 ) -> dict[str, object]:
@@ -1125,7 +1158,7 @@ def artifact_identity(
 
 
 def capture_harness_identity(
-    server: ChromeProfileDatabaseRecoveryServer,
+    server: ChromeProfileDatabaseSqliteRecoveryServer,
 ) -> dict[str, object]:
     return {
         "host_html": _byte_identity(server.host_html),
@@ -1154,7 +1187,7 @@ def toolchain_manifest_versions(manifest: dict[str, Any]) -> dict[str, str]:
 
 
 def smoke_url(
-    server: ChromeProfileDatabaseRecoveryServer,
+    server: ChromeProfileDatabaseSqliteRecoveryServer,
     result_token: str,
     session: str,
     versions: dict[str, str],
@@ -1243,24 +1276,26 @@ def expected_markers(ordinal: int, escrow: TokenEscrow, outcome: str | None = No
         return [
             f"{M7_DATABASE_MARKER_PREFIX}READY",
             RECOVERY_LEASE_REACQUIRED_MARKER,
-            f"{M7_DATABASE_MARKER_PREFIX}SQLITE_WRITE_ACCEPTED sha256={escrow.token_a_digest}",
-            f"{M7_DATABASE_MARKER_PREFIX}LEVELDB_WRITE_ACCEPTED sha256={escrow.token_a_digest}",
+            f"{M7_DATABASE_MARKER_PREFIX}SQLITE_RECOVERY_SEED_A_FULL_INTEGRITY_OK "
+            f"sha256={escrow.token_a_digest}",
             *RECOVERY_CLEAN_MARKERS,
         ]
     if ordinal == 2:
         return [
             f"{M7_DATABASE_MARKER_PREFIX}READY",
             RECOVERY_LEASE_REACQUIRED_MARKER,
-            f"{M7_DATABASE_MARKER_PREFIX}SQLITE_READ_A_OK sha256={escrow.token_a_digest}",
-            f"{M7_DATABASE_MARKER_PREFIX}LEVELDB_READ_A_OK sha256={escrow.token_a_digest}",
+            f"{M7_DATABASE_MARKER_PREFIX}SQLITE_RECOVERY_READ_A_OK "
+            f"sha256={escrow.token_a_digest}",
+            f"{M7_DATABASE_MARKER_PREFIX}SQLITE_ROLLBACK_JOURNAL_COMMIT_B_ARMED "
+            f"sha256={escrow.token_b_digest}",
         ]
-    if ordinal == 3 and outcome in RECOVERED_LEVELDB_VALUES:
+    if ordinal == 3 and outcome in RECOVERED_SQLITE_VALUES:
         digest = escrow.token_a_digest if outcome == "a" else escrow.token_b_digest
         return [
             f"{M7_DATABASE_MARKER_PREFIX}READY",
             RECOVERY_LEASE_REACQUIRED_MARKER,
-            f"{M7_DATABASE_MARKER_PREFIX}LEVELDB_RECOVERY_{outcome.upper()}_OK sha256={digest}",
-            f"{RECOVERY_SQLITE_A_INTEGRITY_MARKER} sha256={escrow.token_a_digest}",
+            f"{M7_DATABASE_MARKER_PREFIX}SQLITE_RECOVERY_{outcome.upper()}_"
+            f"FULL_INTEGRITY_OK sha256={digest}",
             *RECOVERY_CLEAN_MARKERS,
         ]
     raise M0Error("recovery marker expectation is invalid")
@@ -1306,7 +1341,10 @@ def _validate_string_array(value: object, description: str) -> list[str]:
     if (
         not isinstance(value, list)
         or len(value) > 16
-        or not all(isinstance(item, str) and len(item) <= 128 for item in value)
+        or not all(
+            isinstance(item, str) and len(item) <= MAX_DATABASE_MARKER_CHARS
+            for item in value
+        )
     ):
         raise M0Error(f"recovery {description} is invalid")
     return value
@@ -1348,7 +1386,7 @@ def _validate_run(value: object, ordinal: int, escrow: TokenEscrow) -> tuple[str
             or run.get("factoryRejected") is not False
             or run.get("factorySettled") is not True
             or run.get("expectedCleanExitStatusObserved") is not False
-            or run.get("recoveredLevelDBValue") is not None
+            or run.get("recoveredSqliteValue") is not None
             or run.get("settleWindowMs") != INTERRUPTION_SETTLE_MS + FINAL_QUIESCENCE_MS
         ):
             raise M0Error("recovery interrupted run is invalid")
@@ -1356,10 +1394,10 @@ def _validate_run(value: object, ordinal: int, escrow: TokenEscrow) -> tuple[str
 
     outcome: str | None = None
     if ordinal == 3:
-        outcome = run.get("recoveredLevelDBValue")
-        if outcome not in RECOVERED_LEVELDB_VALUES:
-            raise M0Error("recovery LevelDB value is invalid")
-    elif run.get("recoveredLevelDBValue") is not None:
+        outcome = run.get("recoveredSqliteValue")
+        if outcome not in RECOVERED_SQLITE_VALUES:
+            raise M0Error("recovery SQLite value is invalid")
+    elif run.get("recoveredSqliteValue") is not None:
         raise M0Error("recovery non-final value receipt is invalid")
     if (
         markers != expected_markers(ordinal, escrow, outcome)
@@ -1455,7 +1493,7 @@ def validate_phase_result(
     result_token: str,
     session: str,
 ) -> PhaseResult:
-    """Validate one fixed receipt in the bounded recovery protocol."""
+    """Validate one fixed receipt in the bounded SQLite recovery protocol."""
 
     if _contains_prohibited_strings(
         result, (escrow.token_a, escrow.token_b, result_token, session)
@@ -1497,7 +1535,7 @@ def validate_phase_result(
         navigation_type=document.navigation_type,
         time_origin=document.time_origin,
         module_identity=module_identity,
-        recovered_leveldb_value=outcome,
+        recovered_sqlite_value=outcome,
     )
 
 
@@ -1533,7 +1571,7 @@ def validate_three_document_transition(
         or third.navigation_type != "reload"
         or not (first.time_origin < second.time_origin < third.time_origin)
         or len({first.module_identity, second.module_identity, third.module_identity}) != 3
-        or third.recovered_leveldb_value not in RECOVERED_LEVELDB_VALUES
+        or third.recovered_sqlite_value not in RECOVERED_SQLITE_VALUES
     ):
         raise M0Error("recovery three-document transition is invalid")
 
@@ -1562,7 +1600,7 @@ def _stream_response_digest(response: http.client.HTTPResponse) -> tuple[int, st
     return count, digest.hexdigest()
 
 
-def verify_server_delivery(server: ChromeProfileDatabaseRecoveryServer) -> None:
+def verify_server_delivery(server: ChromeProfileDatabaseSqliteRecoveryServer) -> None:
     """Verify only immutable snapshotted static inputs are served."""
 
     host, port = server.server_address[:2]
@@ -1633,7 +1671,7 @@ def _wait_for_receipt(
 def wait_for_phase_result(
     browser: subprocess.Popen[str],
     browser_stderr: deque[str],
-    server: ChromeProfileDatabaseRecoveryServer,
+    server: ChromeProfileDatabaseSqliteRecoveryServer,
     ordinal: int,
     deadline: float,
 ) -> dict[str, Any]:
@@ -1645,7 +1683,7 @@ def wait_for_phase_result(
 def wait_for_ready_receipt(
     browser: subprocess.Popen[str],
     browser_stderr: deque[str],
-    server: ChromeProfileDatabaseRecoveryServer,
+    server: ChromeProfileDatabaseSqliteRecoveryServer,
     ordinal: int,
     deadline: float,
 ) -> dict[str, Any]:
@@ -1775,10 +1813,10 @@ def write_failure_diagnostics(
     """Write fixed runner-owned failure state without opaque request data."""
 
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
-    path = diagnostics_dir / "chrome-profile-database-recovery-m7-failure.json"
+    path = diagnostics_dir / "chrome-profile-database-sqlite-recovery-m7-failure.json"
     payload = {
         "schema_version": 1,
-        "runner": "run_m7_chrome_profile_database_recovery_dom_smoke.py",
+        "runner": "run_m7_chrome_profile_database_sqlite_recovery_dom_smoke.py",
         "case": CASE,
         "scope": SCOPE,
         "m7GateComplete": False,
@@ -1805,7 +1843,7 @@ def write_failure_diagnostics(
 
 
 def _stop_server(
-    server: ChromeProfileDatabaseRecoveryServer | None,
+    server: ChromeProfileDatabaseSqliteRecoveryServer | None,
     server_thread: threading.Thread | None,
     server_thread_started: bool,
 ) -> None:
@@ -1822,22 +1860,22 @@ def _stop_server(
 def _recovery_summary(outcome: str) -> dict[str, object]:
     """Return the accepted bounded result without promoting the M7 gate."""
 
-    if outcome not in RECOVERED_LEVELDB_VALUES:
+    if outcome not in RECOVERED_SQLITE_VALUES:
         raise M0Error("recovery summary value is invalid")
     return {
         "case": CASE,
-        "boundedDatabaseRecoveryAccepted": True,
-        "controlledPostSyncInterruptionProven": True,
+        "boundedSqliteRollbackJournalInterruptionRecoveryProven": True,
+        "sqliteMainDbSyncForwardedBeforeControlledAbortProven": True,
+        "sqliteDoubleReopenFullIntegrityProven": True,
+        "stableSqlitePreOrPostValue": outcome,
         "documents": 3,
         "m7GateComplete": False,
         "freshOuterDocumentReloadProven": True,
         "freshModuleLeaseReacquisitionObserved": True,
-        "leveldbDoubleReopenChecksumParanoidProven": True,
-        "sqliteAFullIntegrityControlsProven": True,
-        "stableLevelDBPreOrPostValue": outcome,
         "outerReloadProfilePersistenceProven": False,
         "persistenceProven": False,
         "profilePersistenceProven": False,
+        "normalProfilePersistenceProven": False,
         "durabilityProven": False,
         "directoryDurabilityProven": False,
         "physicalCrashBehaviorProven": False,
@@ -1850,15 +1888,15 @@ def _recovery_summary(outcome: str) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Prove bounded Chrome Wasm LevelDB recovery after a controlled "
-            "post-log-Sync interruption."
+            "Prove bounded Chrome Wasm SQLite rollback-journal recovery "
+            "after a controlled main-database xSync interruption."
         ),
         epilog=(
             "Build the isolated artifact with: buildtools/linux64/gn gen "
-            "out/wasm-chrome-m7-profile-database-recovery --args='"
+            "out/wasm-chrome-m7-profile-database-sqlite-recovery --args='"
             + DEFAULT_GN_ARGUMENTS
             + "' --fail-on-unused-args; autoninja -C "
-            "out/wasm-chrome-m7-profile-database-recovery chrome_wasm"
+            "out/wasm-chrome-m7-profile-database-sqlite-recovery chrome_wasm"
         ),
     )
     parser.add_argument("--browser", type=Path)
@@ -1875,7 +1913,7 @@ def main() -> int:
     browser_stderr_thread: threading.Thread | None = None
     client: Any | None = None
     outer_profile: tempfile.TemporaryDirectory[str] | None = None
-    server: ChromeProfileDatabaseRecoveryServer | None = None
+    server: ChromeProfileDatabaseSqliteRecoveryServer | None = None
     server_thread: threading.Thread | None = None
     server_thread_started = False
     result_ordinals_received: set[int] = set()
@@ -1898,7 +1936,7 @@ def main() -> int:
         server_thread = threading.Thread(
             target=server.serve_forever,
             kwargs={"poll_interval": 0.05},
-            name="chromium-wasm-m7-profile-database-recovery-server",
+            name="chromium-wasm-m7-profile-database-sqlite-recovery-server",
             daemon=True,
         )
         server_thread.start()
@@ -1918,7 +1956,7 @@ def main() -> int:
         stage = "find-browser"
         browser_path, _browser_version = find_browser(args.browser)
         outer_profile = tempfile.TemporaryDirectory(
-            prefix="chromium-wasm-m7-profile-database-recovery-"
+            prefix="chromium-wasm-m7-profile-database-sqlite-recovery-"
         )
         debug_port = unused_loopback_port()
         stage = "launch-browser"
@@ -1943,7 +1981,7 @@ def main() -> int:
         browser_stderr_thread = threading.Thread(
             target=drain_stream,
             args=(browser.stderr, browser_stderr),
-            name="chromium-wasm-m7-profile-database-recovery-browser-stderr",
+            name="chromium-wasm-m7-profile-database-sqlite-recovery-browser-stderr",
             daemon=True,
         )
         browser_stderr_thread.start()
@@ -2033,7 +2071,7 @@ def main() -> int:
         validate_ready_receipt(third_ready, expected=third)
         stage = "validate-three-document-transition"
         validate_three_document_transition(first, second, third)
-        recovery = _recovery_summary(third.recovered_leveldb_value or "")
+        recovery = _recovery_summary(third.recovered_sqlite_value or "")
     except Exception as error:
         if args.diagnostics_dir is not None:
             try:

@@ -121,6 +121,11 @@ _INCOMPATIBLE_GN_ENABLE_ASSIGNMENT_RES = (
         r"[ \t]*(true|false)[ \t]*(?:#.*)?$",
         re.MULTILINE,
     ),
+    re.compile(
+        r"^[ \t]*enable_chromium_wasm_m7_profile_database_sqlite_recovery_test[ \t]*="
+        r"[ \t]*(true|false)[ \t]*(?:#.*)?$",
+        re.MULTILINE,
+    ),
 )
 
 _BYTE_IDENTITY_FIELDS = frozenset(("bytes", "sha256"))
