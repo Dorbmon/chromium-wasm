@@ -69,6 +69,7 @@ def passing_result(
         "freshSourceSelectedShutdownArtifactProven": True,
         "actualPersistentDefaultPartitionCreatedProven": True,
         "creationSealProven": True,
+        "partitionDestroyNotificationDispatchedProven": True,
         "partitionMapDroppedProven": True,
         "preferencesFenceProven": True,
         "sealedLeaseRetainedReceiptProven": True,
@@ -205,6 +206,8 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
                 smoke.M7_SHUTDOWN_MARKER_PREFIX + "PARTITION_CREATION_SEALED",
                 smoke.M7_SHUTDOWN_MARKER_PREFIX
                 + "LATE_PARTITION_CREATION_REJECTED",
+                smoke.M7_SHUTDOWN_MARKER_PREFIX
+                + "PARTITION_DESTROY_NOTIFICATION_DISPATCHED",
                 smoke.M7_SHUTDOWN_MARKER_PREFIX + "PARTITION_MAP_DROPPED",
                 smoke.M7_SHUTDOWN_MARKER_PREFIX + "PREFERENCES_FENCE_OK",
                 smoke.SEALED_LEASE_RETAINED_MARKER,
@@ -231,6 +234,11 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
         markers[1], markers[2] = markers[2], markers[1]
         with self.assertRaises(M0Error):
             validate(wrong_order)
+
+        missing_notification = passing_result()
+        missing_notification["partitionDestroyNotificationDispatchedProven"] = False
+        with self.assertRaises(M0Error):
+            validate(missing_notification)
 
         lease_released = passing_result()
         run = lease_released["run"]

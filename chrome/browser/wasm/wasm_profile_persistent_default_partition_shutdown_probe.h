@@ -26,6 +26,7 @@ enum class WasmPersistentDefaultPartitionShutdownProbeFailureStage {
   kProfile,
   kConfiguration,
   kPartition,
+  kNotification,
   kMap,
   kAdmission,
   kFence,
@@ -50,6 +51,15 @@ bool IsWasmPersistentDefaultPartitionStructuralWitness(
 // empty, and remains only an instantaneous map-drop observation.
 bool IsWasmPersistentDefaultPartitionMapDropped(bool has_partition_map,
                                                 size_t loaded_partition_count);
+
+// The structural probe requires the exact default partition's real
+// OnBrowserContextWillBeDestroyed() notification to return before accepting a
+// later map drop. This remains distinct from an asynchronous service-close or
+// durable-storage acknowledgement.
+bool IsWasmPersistentDefaultPartitionShutdownNotificationWitness(
+    bool notification_armed,
+    bool notification_dispatched,
+    bool content_notification_returned);
 
 bool HasWasmPersistentDefaultPartitionShutdownProbeArguments();
 bool EnableWasmPersistentDefaultPartitionShutdownProbe();

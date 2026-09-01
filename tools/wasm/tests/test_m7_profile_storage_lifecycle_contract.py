@@ -229,6 +229,20 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.browser_context_impl = source(
             "content/browser/browser_context_impl.h"
         )
+        self.browser_context_impl_source = source(
+            "content/browser/browser_context_impl.cc"
+        )
+        self.content_browser_build = source("content/browser/BUILD.gn")
+        self.content_public_browser_build = source(
+            "content/public/browser/BUILD.gn"
+        )
+        self.shutdown_notification_public_header = source(
+            "content/public/browser/"
+            "wasm_storage_partition_shutdown_test_support.h"
+        )
+        self.shutdown_notification_support = source(
+            "content/browser/wasm_storage_partition_shutdown_test_support.cc"
+        )
         self.storage_partition_map_unit = source(
             "content/browser/storage_partition_impl_map_unittest.cc"
         )
@@ -1284,6 +1298,120 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
                 'EmitMarker("LATE_PARTITION_CREATION_REJECTED");'
             ),
             self.shutdown_probe.index('EmitMarker("PARTITION_MAP_DROPPED");'),
+        )
+
+        for token in (
+            "ArmWasmStoragePartitionShutdownNotificationForTest(",
+            "NotifyPartitionDestroyNotification",
+            "IsWasmPersistentDefaultPartitionShutdownNotificationWitness(",
+            "DidWasmStoragePartitionShutdownNotificationForTest()",
+            'EmitMarker("PARTITION_DESTROY_NOTIFICATION_DISPATCHED");',
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.shutdown_probe)
+        self.assertLess(
+            shutdown_run.index(
+                "ArmWasmStoragePartitionShutdownNotificationForTest("
+            ),
+            shutdown_run.index('EmitMarker("DEFAULT_PARTITION_CREATED");'),
+        )
+        map_drop_body = _body_after_signature(
+            self.shutdown_probe,
+            "  void NotifyMapDropped(content::BrowserContext* browser_context)",
+        )
+        self.assertIn(
+            "IsWasmPersistentDefaultPartitionShutdownNotificationWitness(",
+            map_drop_body,
+        )
+        notification_body = _body_after_signature(
+            self.shutdown_probe,
+            "  void NotifyPartitionDestroyNotification()",
+        )
+        self.assertIn(
+            "content::DidWasmStoragePartitionShutdownNotificationForTest()",
+            notification_body,
+        )
+        self.assertIn(
+            'EmitMarker("PARTITION_DESTROY_NOTIFICATION_DISPATCHED");',
+            notification_body,
+        )
+        self.assertIn(
+            "RequiresTheExactNotificationBeforeMapDrop", self.shutdown_probe_unit
+        )
+        self.assertIn(
+            "IsWasmPersistentDefaultPartitionShutdownNotificationWitness(",
+            self.shutdown_probe_unit,
+        )
+
+        for token in (
+            "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1",
+            "wasm_storage_partition_shutdown_test_support.cc",
+            "wasm_storage_partition_shutdown_test_support.h",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.content_browser_build)
+        for token in (
+            'config("wasm_m7_persistent_default_partition_shutdown_probe")',
+            "wasm_storage_partition_shutdown_test_support.h",
+            "public_configs = []",
+            "public_configs += [",
+            '":wasm_m7_persistent_default_partition_shutdown_probe",',
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.content_public_browser_build)
+        for token in (
+            "ArmWasmStoragePartitionShutdownNotificationForTest(",
+            "DidWasmStoragePartitionShutdownNotificationForTest();",
+            "CancelWasmStoragePartitionShutdownNotificationForTest();",
+            "StoragePartitionImpl::OnBrowserContextWillBeDestroyed()",
+            "not an asynchronous service",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.shutdown_notification_public_header)
+        for token in (
+            "raw_ptr<StoragePartition> expected_partition_",
+            "DCHECK_CURRENTLY_ON(BrowserThread::UI);",
+            "partition != expected_partition_",
+            "notification_returned_ = true;",
+            "std::move(on_notification_returned_).Run();",
+            "void Cancel()",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.shutdown_notification_support)
+        self.assertLess(
+            self.shutdown_notification_support.index(
+                "notification_returned_ = true;"
+            ),
+            self.shutdown_notification_support.index(
+                "std::move(on_notification_returned_).Run();"
+            ),
+        )
+        report_failure_body = _body_after_signature(
+            self.shutdown_probe,
+            "  void ReportFailure(\n"
+            "      WasmPersistentDefaultPartitionShutdownProbeFailureStage stage)",
+        )
+        self.assertIn(
+            "CancelWasmStoragePartitionShutdownNotificationForTest();",
+            report_failure_body,
+        )
+
+        content_notification = _body_after_signature(
+            self.browser_context_impl_source,
+            "void NotifyContextWillBeDestroyed(StoragePartition* partition)",
+        )
+        self.assertIn(
+            "->OnBrowserContextWillBeDestroyed();", content_notification
+        )
+        self.assertIn(
+            "internal::NotifyWasmStoragePartitionShutdownNotificationReturnedForTest(",
+            content_notification,
+        )
+        self.assertLess(
+            content_notification.index("->OnBrowserContextWillBeDestroyed();"),
+            content_notification.index(
+                "internal::NotifyWasmStoragePartitionShutdownNotificationReturnedForTest("
+            ),
         )
 
         for token in (

@@ -29,6 +29,9 @@
 #include "content/browser/speech/tts_controller_impl.h"
 #include "content/browser/storage_partition_impl.h"
 #include "content/browser/storage_partition_impl_map.h"
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+#include "content/browser/wasm_storage_partition_shutdown_test_support.h"
+#endif
 #include "content/public/browser/back_forward_transition_animation_manager.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
@@ -56,6 +59,12 @@ namespace {
 void NotifyContextWillBeDestroyed(StoragePartition* partition) {
   static_cast<StoragePartitionImpl*>(partition)
       ->OnBrowserContextWillBeDestroyed();
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // This source-selected receipt must run inline after the real partition
+  // notification returns, before BrowserContext can later destroy its map.
+  internal::NotifyWasmStoragePartitionShutdownNotificationReturnedForTest(
+      partition);
+#endif
 }
 
 // Kill switch that controls whether to cancel navigations as part of

@@ -10,10 +10,12 @@
 
 #include "base/command_line.h"
 #include "base/files/file_path.h"
+#include "base/functional/bind.h"
 #include "base/no_destructor.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/storage_partition_config.h"
+#include "content/public/browser/wasm_storage_partition_shutdown_test_support.h"
 
 namespace chrome {
 
@@ -38,6 +40,9 @@ const char* FailureStageName(
       return "configuration";
     case WasmPersistentDefaultPartitionShutdownProbeFailureStage::kPartition:
       return "partition";
+    case WasmPersistentDefaultPartitionShutdownProbeFailureStage::
+        kNotification:
+      return "notification";
     case WasmPersistentDefaultPartitionShutdownProbeFailureStage::kMap:
       return "map";
     case WasmPersistentDefaultPartitionShutdownProbeFailureStage::kAdmission:
@@ -140,6 +145,16 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
       return false;
     }
 
+    if (!content::ArmWasmStoragePartitionShutdownNotificationForTest(
+            partition,
+            base::BindOnce(&WasmPersistentDefaultPartitionShutdownProbeState::
+                               NotifyPartitionDestroyNotification,
+                           base::Unretained(this)))) {
+      ReportFailure(WasmPersistentDefaultPartitionShutdownProbeFailureStage::
+                        kNotification);
+      return false;
+    }
+    notification_armed_ = true;
     partition_created_ = true;
     EmitMarker("DEFAULT_PARTITION_CREATED");
     return true;
@@ -181,7 +196,11 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
 
   void NotifyMapDropped(content::BrowserContext* browser_context) {
     if (!enabled_ || failure_reported_ || !partition_created_ ||
-        !creation_sealed_ || map_dropped_ || !browser_context ||
+        !creation_sealed_ ||
+        !IsWasmPersistentDefaultPartitionShutdownNotificationWitness(
+            notification_armed_, notification_dispatched_,
+            content::DidWasmStoragePartitionShutdownNotificationForTest()) ||
+        map_dropped_ || !browser_context ||
         !IsWasmPersistentDefaultPartitionMapDropped(
             browser_context->HasStoragePartitionMap(),
             browser_context->GetLoadedStoragePartitionCount())) {
@@ -215,8 +234,11 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
   }
 
   bool CanUseFailureRetirement() const {
-    return enabled_ && partition_created_ && creation_sealed_ && map_dropped_ &&
-           prefs_fence_succeeded_ && !failure_reported_;
+    return enabled_ && partition_created_ && creation_sealed_ &&
+           IsWasmPersistentDefaultPartitionShutdownNotificationWitness(
+               notification_armed_, notification_dispatched_,
+               content::DidWasmStoragePartitionShutdownNotificationForTest()) &&
+           map_dropped_ && prefs_fence_succeeded_ && !failure_reported_;
   }
 
   void NotifyFailureRetirement(bool success) {
@@ -243,6 +265,11 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
       return;
     }
     failure_reported_ = true;
+    if (notification_armed_ && !notification_dispatched_) {
+      // A failure before the real notification returns must not leave the
+      // source-selected singleton holding a stale partition pointer.
+      content::CancelWasmStoragePartitionShutdownNotificationForTest();
+    }
     (void)CompleteProfileIOHold(
         WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
     std::fprintf(stderr, "%sFAIL stage=%s\n", kMarkerPrefix,
@@ -251,6 +278,19 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
   }
 
  private:
+  void NotifyPartitionDestroyNotification() {
+    if (!enabled_ || failure_reported_ || !partition_created_ ||
+        !creation_sealed_ || !notification_armed_ ||
+        notification_dispatched_ ||
+        !content::DidWasmStoragePartitionShutdownNotificationForTest()) {
+      ReportFailure(WasmPersistentDefaultPartitionShutdownProbeFailureStage::
+                        kNotification);
+      return;
+    }
+    notification_dispatched_ = true;
+    EmitMarker("PARTITION_DESTROY_NOTIFICATION_DISPATCHED");
+  }
+
   bool CompleteProfileIOHold(
       WasmProfileOrderedDrainLifecycle::ProfileIOCompletion completion) {
     if (!profile_io_hold_) {
@@ -272,6 +312,8 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
   int policy_query_count_ = 0;
   bool partition_created_ = false;
   bool creation_sealed_ = false;
+  bool notification_armed_ = false;
+  bool notification_dispatched_ = false;
   bool map_dropped_ = false;
   bool prefs_fence_succeeded_ = false;
   bool retired_ = false;
@@ -302,6 +344,14 @@ bool IsWasmPersistentDefaultPartitionStructuralWitness(
 bool IsWasmPersistentDefaultPartitionMapDropped(bool has_partition_map,
                                                 size_t loaded_partition_count) {
   return !has_partition_map && loaded_partition_count == 0u;
+}
+
+bool IsWasmPersistentDefaultPartitionShutdownNotificationWitness(
+    bool notification_armed,
+    bool notification_dispatched,
+    bool content_notification_returned) {
+  return notification_armed && notification_dispatched &&
+         content_notification_returned;
 }
 
 bool HasWasmPersistentDefaultPartitionShutdownProbeArguments() {

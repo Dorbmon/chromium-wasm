@@ -13,7 +13,9 @@ starts one isolated host document with exactly this native argument:
 
 The host accepts only the fixed stderr sequence ``DEFAULT_PARTITION_CREATED``,
 ``PARTITION_CREATION_SEALED``, ``LATE_PARTITION_CREATION_REJECTED``,
-``PARTITION_MAP_DROPPED`` (an immediate post-shutdown observation),
+``PARTITION_DESTROY_NOTIFICATION_DISPATCHED`` (the real default partition's
+destruction notification returned), ``PARTITION_MAP_DROPPED`` (an immediate
+post-shutdown observation),
 ``PREFERENCES_FENCE_OK``, the generic sealed/lease-retained
 failure-retirement receipt, and
 ``FAIL_CLOSED_RETIREMENT``. It also requires the native positive nonzero
@@ -65,7 +67,8 @@ SENTINEL = "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE_DOM"
 CASE = "chrome_persistent_default_partition_shutdown_probe_m7"
 SCOPE = (
     "one-fresh-source-selected-chrome-wasm-structural-default-partition-"
-    "map-drop-and-fail-closed-retirement-observation-only-no-durable-profile-claim"
+    "destruction-notification-return-map-drop-and-fail-closed-retirement-"
+    "observation-only-no-durable-profile-claim"
 )
 PRODUCT_MODULE_NAME = "chrome_wasm_m7_persistent_default_partition_shutdown_probe"
 PRODUCT_GN_TARGET = "//chrome:chrome_wasm"
@@ -100,6 +103,7 @@ EXPECTED_MARKERS = (
     M7_SHUTDOWN_MARKER_PREFIX + "DEFAULT_PARTITION_CREATED",
     M7_SHUTDOWN_MARKER_PREFIX + "PARTITION_CREATION_SEALED",
     M7_SHUTDOWN_MARKER_PREFIX + "LATE_PARTITION_CREATION_REJECTED",
+    M7_SHUTDOWN_MARKER_PREFIX + "PARTITION_DESTROY_NOTIFICATION_DISPATCHED",
     M7_SHUTDOWN_MARKER_PREFIX + "PARTITION_MAP_DROPPED",
     M7_SHUTDOWN_MARKER_PREFIX + "PREFERENCES_FENCE_OK",
     SEALED_LEASE_RETAINED_MARKER,
@@ -237,6 +241,7 @@ _RESULT_FIELDS = frozenset(
         "hostBoundary",
         "m7GateComplete",
         "nonzeroProcessExitAndAckProven",
+        "partitionDestroyNotificationDispatchedProven",
         "partitionMapDroppedProven",
         "preferencesFenceProven",
         "profilePersistenceProven",
@@ -835,6 +840,7 @@ def validate_result(
         "freshSourceSelectedShutdownArtifactProven": True,
         "actualPersistentDefaultPartitionCreatedProven": True,
         "creationSealProven": True,
+        "partitionDestroyNotificationDispatchedProven": True,
         "partitionMapDroppedProven": True,
         "preferencesFenceProven": True,
         "sealedLeaseRetainedReceiptProven": True,
@@ -952,6 +958,7 @@ def shutdown_probe_summary() -> dict[str, object]:
         "actualPersistentDefaultPartitionCreatedProven": True,
         "aggregatePartitionCloseProven": False,
         "creationSealProven": True,
+        "partitionDestroyNotificationDispatchedProven": True,
         "crashRecoveryProven": False,
         "durableProfileFlushProven": False,
         "failClosedRetirementProven": True,

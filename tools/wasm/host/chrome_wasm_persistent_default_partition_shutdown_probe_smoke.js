@@ -3,8 +3,9 @@
 // found in the LICENSE file.
 
 // A one-document structural shutdown probe. Chromium constructs the real
-// persistent default StoragePartition, observes its StoragePartitionImplMap
-// absent immediately after profile shutdown, fences preferences, and
+// persistent default StoragePartition, receives its real destruction
+// notification return before its StoragePartitionImplMap is absent, fences
+// preferences, and
 // deliberately selects sealed/lease-retained failure retirement. This host
 // verifies only fixed stderr receipts and the clean nonzero process-exit
 // acknowledgement. It neither opens OPFS nor makes a durable flush,
@@ -14,7 +15,8 @@ const HOST_PROTOCOL = 1;
 const CASE = "chrome_persistent_default_partition_shutdown_probe_m7";
 const SCOPE =
     "one-fresh-source-selected-chrome-wasm-structural-default-partition-" +
-    "map-drop-and-fail-closed-retirement-observation-only-no-durable-profile-claim";
+    "destruction-notification-return-map-drop-and-fail-closed-retirement-" +
+    "observation-only-no-durable-profile-claim";
 const PRODUCT_MODULE_NAME =
     "chrome_wasm_m7_persistent_default_partition_shutdown_probe";
 export const EXACT_EMPTY_PROBE_SWITCH =
@@ -30,6 +32,8 @@ const PARTITION_CREATION_SEALED_MARKER =
     SHUTDOWN_MARKER_PREFIX + "PARTITION_CREATION_SEALED";
 const LATE_PARTITION_CREATION_REJECTED_MARKER =
     SHUTDOWN_MARKER_PREFIX + "LATE_PARTITION_CREATION_REJECTED";
+const PARTITION_DESTROY_NOTIFICATION_DISPATCHED_MARKER =
+    SHUTDOWN_MARKER_PREFIX + "PARTITION_DESTROY_NOTIFICATION_DISPATCHED";
 const PARTITION_MAP_DROPPED_MARKER =
     SHUTDOWN_MARKER_PREFIX + "PARTITION_MAP_DROPPED";
 const PREFERENCES_FENCE_OK_MARKER =
@@ -43,6 +47,7 @@ const EXPECTED_MARKERS = Object.freeze([
   DEFAULT_PARTITION_CREATED_MARKER,
   PARTITION_CREATION_SEALED_MARKER,
   LATE_PARTITION_CREATION_REJECTED_MARKER,
+  PARTITION_DESTROY_NOTIFICATION_DISPATCHED_MARKER,
   PARTITION_MAP_DROPPED_MARKER,
   PREFERENCES_FENCE_OK_MARKER,
   SEALED_LEASE_RETAINED_MARKER,
@@ -63,7 +68,8 @@ const RESULT_FIELDS = Object.freeze([
   "freshDocumentReloadProven",
   "freshSourceSelectedShutdownArtifactProven", "hostBoundary",
   "m7GateComplete", "nonzeroProcessExitAndAckProven",
-  "partitionMapDroppedProven", "preferencesFenceProven",
+  "partitionDestroyNotificationDispatchedProven", "partitionMapDroppedProven",
+  "preferencesFenceProven",
   "profilePersistenceProven", "profileStorageLeaseReleasedProven", "protocol",
   "quiescence", "run", "scope", "sealedLeaseRetainedReceiptProven",
   "sharedArrayBuffer", "status", "structuralShutdownWitnessProven", "versions",
@@ -652,17 +658,20 @@ class PersistentDefaultPartitionShutdownProbeHost {
       creationSealProven:
           lifecycleComplete &&
           this.run.markers[1] === PARTITION_CREATION_SEALED_MARKER,
+      partitionDestroyNotificationDispatchedProven:
+          lifecycleComplete &&
+          this.run.markers[3] === PARTITION_DESTROY_NOTIFICATION_DISPATCHED_MARKER,
       partitionMapDroppedProven:
           lifecycleComplete &&
-          this.run.markers[3] === PARTITION_MAP_DROPPED_MARKER,
+          this.run.markers[4] === PARTITION_MAP_DROPPED_MARKER,
       preferencesFenceProven:
-          lifecycleComplete && this.run.markers[4] === PREFERENCES_FENCE_OK_MARKER,
+          lifecycleComplete && this.run.markers[5] === PREFERENCES_FENCE_OK_MARKER,
       sealedLeaseRetainedReceiptProven:
           lifecycleComplete &&
-          this.run.markers[5] === SEALED_LEASE_RETAINED_MARKER,
+          this.run.markers[6] === SEALED_LEASE_RETAINED_MARKER,
       failClosedRetirementProven:
           lifecycleComplete &&
-          this.run.markers[6] === FAIL_CLOSED_RETIREMENT_MARKER,
+          this.run.markers[7] === FAIL_CLOSED_RETIREMENT_MARKER,
       structuralShutdownWitnessProven: lifecycleComplete,
       nonzeroProcessExitAndAckProven: lifecycleComplete,
       aggregatePartitionCloseProven: false,
@@ -823,7 +832,9 @@ export function validateChromeWasmPersistentDefaultPartitionShutdownProbeResult(
       result.exactEmptyProbeSwitchPassed !== true ||
       result.freshSourceSelectedShutdownArtifactProven !== true ||
       result.actualPersistentDefaultPartitionCreatedProven !== true ||
-      result.creationSealProven !== true || result.partitionMapDroppedProven !== true ||
+      result.creationSealProven !== true ||
+      result.partitionDestroyNotificationDispatchedProven !== true ||
+      result.partitionMapDroppedProven !== true ||
       result.preferencesFenceProven !== true ||
       result.sealedLeaseRetainedReceiptProven !== true ||
       result.failClosedRetirementProven !== true ||

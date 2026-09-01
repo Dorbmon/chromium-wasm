@@ -39,6 +39,10 @@ config("wasm_m7_profile_bookmark_cookie_history_database_local_storage_test") {
   ]
 }
 
+config("wasm_m7_persistent_default_partition_shutdown_probe") {
+  defines = [ "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1" ]
+}
+
 # See //content/BUILD.gn for how this works.
 group("browser") {
   if (is_component_build) {
@@ -51,6 +55,7 @@ group("browser") {
 source_set("browser_sources") {
   # External code should depend on via ":browser" above.
   visibility = [ "//content/*" ]
+  public_configs = []
   sources = [
     "active_url_message_filter.cc",
     "active_url_message_filter.h",
@@ -718,6 +723,15 @@ source_set("browser_sources") {
       "//components/services/storage/public/mojom:wasm_local_storage_test_api",
     ]
     sources += [ "wasm_dom_storage_test_support.h" ]
+  }
+
+  if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
+    # Propagate the declaration gate to the selected Chrome probe while the
+    # Content implementation receives its own direct source-set definition.
+    public_configs += [
+      ":wasm_m7_persistent_default_partition_shutdown_probe",
+    ]
+    sources += [ "wasm_storage_partition_shutdown_test_support.h" ]
   }
 
   if (is_posix || is_fuchsia) {

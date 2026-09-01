@@ -49,4 +49,24 @@ TEST(WasmPersistentDefaultPartitionShutdownProbeTest,
       /*loaded_partition_count=*/1));
 }
 
+TEST(WasmPersistentDefaultPartitionShutdownProbeTest,
+     RequiresTheExactNotificationBeforeMapDrop) {
+  EXPECT_TRUE(IsWasmPersistentDefaultPartitionShutdownNotificationWitness(
+      /*notification_armed=*/true,
+      /*notification_dispatched=*/true,
+      /*content_notification_returned=*/true));
+  EXPECT_FALSE(IsWasmPersistentDefaultPartitionShutdownNotificationWitness(
+      /*notification_armed=*/false,
+      /*notification_dispatched=*/true,
+      /*content_notification_returned=*/true));
+  EXPECT_FALSE(IsWasmPersistentDefaultPartitionShutdownNotificationWitness(
+      /*notification_armed=*/true,
+      /*notification_dispatched=*/false,
+      /*content_notification_returned=*/true));
+  EXPECT_FALSE(IsWasmPersistentDefaultPartitionShutdownNotificationWitness(
+      /*notification_armed=*/true,
+      /*notification_dispatched=*/true,
+      /*content_notification_returned=*/false));
+}
+
 }  // namespace chrome

@@ -45,6 +45,9 @@ export default function(options) {
   } else {
     options.printErr(shutdown + "PARTITION_CREATION_SEALED");
     options.printErr(shutdown + "LATE_PARTITION_CREATION_REJECTED");
+    if (globalThis.__scenario !== "missing-notification") {
+      options.printErr(shutdown + "PARTITION_DESTROY_NOTIFICATION_DISPATCHED");
+    }
     options.printErr(shutdown + "PARTITION_MAP_DROPPED");
     options.printErr(shutdown + "PREFERENCES_FENCE_OK");
     options.printErr(retirement + "SEALED_LEASE_RETAINED");
@@ -77,7 +80,7 @@ if (!globalThis.crypto || !globalThis.crypto.subtle) {
   globalThis.crypto = webcrypto;
 }
 const scenario = process.argv[1];
-if (!new Set(["resolved", "exit-status", "lease-release"]).has(scenario)) {
+if (!new Set(["resolved", "exit-status", "lease-release", "missing-notification"]).has(scenario)) {
   throw new Error("test scenario is invalid");
 }
 globalThis.__scenario = scenario;
@@ -214,6 +217,7 @@ if (scenario === "resolved" || scenario === "exit-status") {
         "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:DEFAULT_PARTITION_CREATED",
         "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:PARTITION_CREATION_SEALED",
         "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:LATE_PARTITION_CREATION_REJECTED",
+        "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:PARTITION_DESTROY_NOTIFICATION_DISPATCHED",
         "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:PARTITION_MAP_DROPPED",
         "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:PREFERENCES_FENCE_OK",
         "CHROMIUM_WASM_M7_PROFILE_FAILURE_RETIREMENT:SEALED_LEASE_RETAINED",
@@ -221,6 +225,7 @@ if (scenario === "resolved" || scenario === "exit-status") {
       ].join(",") || result.run.processExitCount !== 1 ||
       result.run.processExitCode !== 23 || result.run.onExitCount !== 1 ||
       result.run.runtimeExitCode !== 23 || result.creationSealProven !== true ||
+      result.partitionDestroyNotificationDispatchedProven !== true ||
       result.aggregatePartitionCloseProven !== false ||
       result.durableProfileFlushProven !== false ||
       result.profilePersistenceProven !== false ||
@@ -235,10 +240,15 @@ if (scenario === "resolved" || scenario === "exit-status") {
   if (root.dataset.state !== "pass" || status.textContent !== "pass") {
     throw new Error("host did not publish pass state");
   }
-} else {
+} else if (scenario === "lease-release") {
   if (result.status !== "fail" || result.run.leaseReleasedMarkerObserved !== true ||
       result.run.markers.length !== 1 || root.dataset.state !== "fail") {
     throw new Error("host accepted a lease release marker");
+  }
+} else {
+  if (result.status !== "fail" || result.run.leaseReleasedMarkerObserved !== false ||
+      result.run.markers.length !== 3 || root.dataset.state !== "fail") {
+    throw new Error("host accepted a missing destruction-notification receipt");
   }
 }
 '''
@@ -258,16 +268,20 @@ class M7PersistentDefaultPartitionShutdownProbeHostTest(unittest.TestCase):
             "this.run.markers[1] === PARTITION_CREATION_SEALED_MARKER", source
         )
         self.assertIn(
-            "this.run.markers[3] === PARTITION_MAP_DROPPED_MARKER", source
+            "this.run.markers[3] === PARTITION_DESTROY_NOTIFICATION_DISPATCHED_MARKER",
+            source,
         )
         self.assertIn(
-            "this.run.markers[4] === PREFERENCES_FENCE_OK_MARKER", source
+            "this.run.markers[4] === PARTITION_MAP_DROPPED_MARKER", source
         )
         self.assertIn(
-            "this.run.markers[5] === SEALED_LEASE_RETAINED_MARKER", source
+            "this.run.markers[5] === PREFERENCES_FENCE_OK_MARKER", source
         )
         self.assertIn(
-            "this.run.markers[6] === FAIL_CLOSED_RETIREMENT_MARKER", source
+            "this.run.markers[6] === SEALED_LEASE_RETAINED_MARKER", source
+        )
+        self.assertIn(
+            "this.run.markers[7] === FAIL_CLOSED_RETIREMENT_MARKER", source
         )
 
     def run_scenario(self, scenario: str) -> None:
@@ -280,7 +294,7 @@ class M7PersistentDefaultPartitionShutdownProbeHostTest(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_host_accepts_the_exact_seven_marker_structural_receipt(self) -> None:
+    def test_host_accepts_the_exact_eight_marker_structural_receipt(self) -> None:
         self.run_scenario("resolved")
 
     def test_host_accepts_an_exact_matching_nonzero_exit_status(self) -> None:
@@ -288,6 +302,9 @@ class M7PersistentDefaultPartitionShutdownProbeHostTest(unittest.TestCase):
 
     def test_host_rejects_a_clean_lease_release_marker_but_acks_receipt(self) -> None:
         self.run_scenario("lease-release")
+
+    def test_host_rejects_a_missing_destruction_notification_receipt(self) -> None:
+        self.run_scenario("missing-notification")
 
 
 if __name__ == "__main__":

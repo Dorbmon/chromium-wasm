@@ -2905,6 +2905,18 @@ source_set("browser") {
     ]
   }
 
+  if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
+    # Keep this inline destruction-notification witness physically absent from
+    # ordinary Content and ordinary Wasm Chrome. The executable's define does
+    # not propagate back into this source set.
+    defines += [ "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1" ]
+    sources += [
+      "../public/browser/wasm_storage_partition_shutdown_test_support.h",
+      "wasm_storage_partition_shutdown_test_support.cc",
+      "wasm_storage_partition_shutdown_test_support.h",
+    ]
+  }
+
   # Watching the local file system via the File System Access API is not
   # supported on Android or Fuchsia. Local file system access is not supported
   # on Android at all (see https://crbug.com/1011535), whereas
