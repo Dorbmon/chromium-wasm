@@ -2,7 +2,18 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/wasm.gni")
 import("//mojo/public/tools/bindings/mojom.gni")
+
+# The result-bearing close path is a source-selected Wasm shutdown-probe
+# witness. Its class-layout declaration must reach every consumer of the
+# private IndexedDB source set in that one artifact, while ordinary Chromium
+# and ordinary Wasm Chrome keep the upstream source and layout unchanged.
+config("wasm_m7_persistent_default_partition_shutdown_probe") {
+  defines = [
+    "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1",
+  ]
+}
 
 source_set("indexed_db") {
   public = [ "indexed_db_control_wrapper.h" ]
@@ -115,8 +126,15 @@ source_set("indexed_db") {
 
   configs += [ "//content:content_implementation" ]
 
+  if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
+    configs += [ ":wasm_m7_persistent_default_partition_shutdown_probe" ]
+    public_configs =
+        [ ":wasm_m7_persistent_default_partition_shutdown_probe" ]
+  }
+
   friend = [
     ":unit_tests",
+    ":wasm_m7_persistent_default_partition_shutdown_receipt_unittests",
     "//content/test/*",
   ]
 }
@@ -194,6 +212,31 @@ source_set("unit_tests") {
   # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
   # enable the diagnostic by removing this line.
   configs += [ "//build/config/compiler:no_exit_time_destructors" ]
+
+  if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
+    configs += [ ":wasm_m7_persistent_default_partition_shutdown_probe" ]
+    sources += [ "indexed_db_control_wrapper_unittest.cc" ]
+  }
+}
+
+if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
+  source_set("wasm_m7_persistent_default_partition_shutdown_receipt_unittests") {
+    testonly = true
+
+    sources = [ "instance/bucket_context_shutdown_receipt_unittest.cc" ]
+
+    configs += [ ":wasm_m7_persistent_default_partition_shutdown_probe" ]
+
+    deps = [
+      ":indexed_db",
+      "//base",
+      "//base/test:test_support",
+      "//components/services/storage/public/cpp",
+      "//storage/browser",
+      "//testing/gtest",
+      "//third_party/blink/public/common",
+    ]
+  }
 }
 
 mojom("internals_mojo_bindings") {

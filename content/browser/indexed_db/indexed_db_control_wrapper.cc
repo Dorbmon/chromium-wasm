@@ -45,7 +45,13 @@ IndexedDBControlWrapper::IndexedDBControlWrapper(
 IndexedDBControlWrapper::~IndexedDBControlWrapper() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  if (context_) {
+    IndexedDBContextImpl::Shutdown(std::move(context_));
+  }
+#else
   IndexedDBContextImpl::Shutdown(std::move(context_));
+#endif
 }
 
 void IndexedDBControlWrapper::BindIndexedDB(
@@ -55,6 +61,14 @@ void IndexedDBControlWrapper::BindIndexedDB(
         client_state_checker_remote,
     mojo::PendingReceiver<blink::mojom::IDBFactory> receiver) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // A successful result-bearing shutdown consumes the context. Do not revive
+  // its control pipe or begin policy tracking after that terminal transition;
+  // dropping |receiver| deliberately disconnects late renderer ingress.
+  if (!context_) {
+    return;
+  }
+#endif
   if (storage_policy_observer_) {
     storage_policy_observer_->StartTrackingOrigin(
         bucket_locator.storage_key.origin());
@@ -67,6 +81,9 @@ void IndexedDBControlWrapper::BindIndexedDB(
 storage::mojom::IndexedDBControl&
 IndexedDBControlWrapper::GetIndexedDBControl() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  CHECK(context_);
+#endif
   DCHECK(
       !(indexed_db_control_.is_bound() && !indexed_db_control_.is_connected()))
       << "Rebinding is not supported yet.";
@@ -78,9 +95,35 @@ IndexedDBControlWrapper::GetIndexedDBControl() {
   return *indexed_db_control_;
 }
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+bool IndexedDBControlWrapper::ShutdownAndReply(base::OnceClosure completion) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!context_ || !completion) {
+    return false;
+  }
+
+  if (!IndexedDBContextImpl::ShutdownAndReply(&context_,
+                                              std::move(completion))) {
+    return false;
+  }
+
+  // The context close clears the control receiver. Keeping this observer alive
+  // would let a later policy notification invoke a disconnected control pipe
+  // (or try to bind a new one) after the terminal close transition.
+  storage_policy_observer_.reset();
+  indexed_db_control_.reset();
+  return true;
+}
+#endif
+
 void IndexedDBControlWrapper::OnSpecialStoragePolicyUpdated(
     std::vector<storage::mojom::StoragePolicyUpdatePtr> policy_updates) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  if (!context_) {
+    return;
+  }
+#endif
   GetIndexedDBControl().ApplyPolicyUpdates(std::move(policy_updates));
 }
 

@@ -43,6 +43,9 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+#include "base/task/sequenced_task_runner.h"
+#endif
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
 #include "base/trace_event/memory_dump_manager.h"
@@ -115,6 +118,20 @@ base::OnceClosure& GetTeardownExtraStepForTesting() {
   static base::NoDestructor<base::OnceClosure> g_teardown_override_for_testing;
   return *g_teardown_override_for_testing;
 }
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+base::OnceClosure& GetDestructionExtraStepForTesting() {
+  static base::NoDestructor<base::OnceClosure>
+      g_destruction_override_for_testing;
+  return *g_destruction_override_for_testing;
+}
+
+base::OnceClosure& GetFinalDestructionExtraStepForTesting() {
+  static base::NoDestructor<base::OnceClosure>
+      g_final_destruction_override_for_testing;
+  return *g_final_destruction_override_for_testing;
+}
+#endif
 
 // This struct facilitates requesting bucket space usage from the quota manager.
 // There have been reports of the callback being passed to the quota manager
@@ -312,10 +329,35 @@ BucketContext::~BucketContext() {
   delegate_.on_ready_for_destruction.Reset();
   ResetBackingStore();
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  if (!GetDestructionExtraStepForTesting().is_null()) {
+    std::move(GetDestructionExtraStepForTesting()).Run();
+  }
+#endif
+
   if (delegate_.on_destroyed) {
     std::move(delegate_.on_destroyed).Run();
   }
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  if (delegate_.on_destroyed_after_destruction) {
+    // This is intentionally a separate task. The destructor body runs before
+    // member subobjects are destroyed, so code which may allow a replacement
+    // BucketContext for the same path must wait until this task.
+    (void)base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, std::move(delegate_.on_destroyed_after_destruction));
+  }
+#endif
 }
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+BucketContext::FinalDestructionStepForTesting::~
+    FinalDestructionStepForTesting() {
+  if (!GetFinalDestructionExtraStepForTesting().is_null()) {
+    std::move(GetFinalDestructionExtraStepForTesting()).Run();
+  }
+}
+#endif
 
 // static
 uint64_t BucketContext::ReadUsageFromDisk(
@@ -334,6 +376,36 @@ uint64_t BucketContext::ReadUsageFromDisk(
 void BucketContext::ForceClose(bool doom) {
   DoForceClose(doom, doom ? "Force close delete origin" : "Unknown");
 }
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+void BucketContext::SealForContextShutdown(base::OnceClosure on_destroyed) {
+  CHECK(on_destroyed);
+  CHECK(!context_shutdown_in_progress_);
+  context_shutdown_in_progress_ = true;
+
+  // Preserve the existing post-destruction task-runner cleanup and append the
+  // close acknowledgement to the same task. A refused task deliberately
+  // withholds that acknowledgement: the caller must fail closed rather than
+  // report a child object whose full destruction could not be observed.
+  base::OnceClosure existing_after_destruction =
+      std::move(delegate().on_destroyed_after_destruction);
+  delegate().on_destroyed_after_destruction = base::BindOnce(
+      [](base::OnceClosure existing_after_destruction,
+         base::OnceClosure on_destroyed) {
+        if (existing_after_destruction) {
+          std::move(existing_after_destruction).Run();
+        }
+        std::move(on_destroyed).Run();
+      },
+      std::move(existing_after_destruction), std::move(on_destroyed));
+
+  // Unlike ForceClose(false), this terminal close cannot allow an existing
+  // IDBFactory endpoint to reinitialize the backing store after the receipt.
+  delegate().on_ready_for_destruction.Reset();
+  receivers_.Clear();
+  DoForceClose(/*doom=*/false, "Context shutdown");
+}
+#endif
 
 void BucketContext::DoForceClose(bool doom, const std::string& message) {
   DCHECK_EQ(message, SanitizeErrorMessage(message));
@@ -662,6 +734,14 @@ void BucketContext::AddReceiver(
     mojo::PendingRemote<storage::mojom::IndexedDBClientStateChecker>
         client_state_checker_remote,
     mojo::PendingReceiver<blink::mojom::IDBFactory> pending_receiver) {
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  if (context_shutdown_in_progress_) {
+    // Dropping the pending endpoint is an explicit Mojo disconnect. A sealed
+    // context must not bounce an old request back into a parent that is also
+    // finishing its result-bearing close.
+    return;
+  }
+#endif
   // When `on_ready_for_destruction` is non-null, `this` hasn't requested its
   // own destruction. When it is null, this is to be torn down and has to bounce
   // the AddReceiver request back to the delegate.
@@ -677,6 +757,15 @@ void BucketContext::AddReceiver(
 }
 
 void BucketContext::GetDatabaseInfo(GetDatabaseInfoCallback callback) {
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  if (context_shutdown_in_progress_) {
+    std::move(callback).Run(
+        {}, blink::mojom::IDBError::New(
+                blink::mojom::IDBException::kAbortError,
+                u"IndexedDB context is shutting down."));
+    return;
+  }
+#endif
   base::ElapsedTimer timer;
   auto scoper = ScopedHandlingRequest();
   if (!backing_store_) {
@@ -730,6 +819,16 @@ void BucketContext::Open(
         transaction_receiver,
     int64_t transaction_id,
     int scheduling_priority) {
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  mojo::AssociatedRemote<blink::mojom::IDBFactoryClient> factory_client(
+      std::move(pending_factory_client));
+  if (context_shutdown_in_progress_) {
+    std::move(factory_client)
+        ->Error(blink::mojom::IDBException::kAbortError,
+                u"IndexedDB context is shutting down.");
+    return;
+  }
+#endif
   base::ElapsedTimer timer;
   TRACE_EVENT0("IndexedDB", "BucketContext::Open");
   auto scoper = ScopedHandlingRequest();
@@ -741,9 +840,10 @@ void BucketContext::Open(
 
   // TODO(dgrogan): Don't let a non-existing database be opened (and therefore
   // created) if this origin is already over quota.
+#if !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
   mojo::AssociatedRemote<blink::mojom::IDBFactoryClient> factory_client(
       std::move(pending_factory_client));
-
+#endif
   // Compute this beforehand as `InitBackingStore` may change files on disk.
   std::string_view fallback_suffix = DetermineHistogramSuffix(
       sqlite_rollout_stage_, bucket_locator(), data_path_);
@@ -807,10 +907,22 @@ void BucketContext::DeleteDatabase(
         pending_factory_client,
     const std::u16string& name,
     bool force_close) {
-  base::ElapsedTimer timer;
-  TRACE_EVENT0("IndexedDB", "BucketContext::DeleteDatabase");
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
   mojo::AssociatedRemote<blink::mojom::IDBFactoryClient> factory_client(
       std::move(pending_factory_client));
+  if (context_shutdown_in_progress_) {
+    std::move(factory_client)
+        ->Error(blink::mojom::IDBException::kAbortError,
+                u"IndexedDB context is shutting down.");
+    return;
+  }
+#endif
+  base::ElapsedTimer timer;
+  TRACE_EVENT0("IndexedDB", "BucketContext::DeleteDatabase");
+#if !defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  mojo::AssociatedRemote<blink::mojom::IDBFactoryClient> factory_client(
+      std::move(pending_factory_client));
+#endif
   auto scoper = ScopedHandlingRequest();
 
   if (!backing_store_) {
@@ -1029,6 +1141,20 @@ void BucketContext::InsertTeardownStepForTesting(
     base::OnceClosure on_teardown) {
   GetTeardownExtraStepForTesting() = std::move(on_teardown);
 }
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+// static
+void BucketContext::InsertDestructionStepForTesting(
+    base::OnceClosure on_destroyed) {
+  GetDestructionExtraStepForTesting() = std::move(on_destroyed);
+}
+
+// static
+void BucketContext::InsertFinalDestructionStepForTesting(
+    base::OnceClosure on_destroyed) {
+  GetFinalDestructionExtraStepForTesting() = std::move(on_destroyed);
+}
+#endif
 
 // static
 base::TimeDelta BucketContext::GetBackingStoreGracePeriodForTesting() {

@@ -29,6 +29,9 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+#include "base/memory/ref_counted.h"
+#endif
 #include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
 #include "base/notreached.h"
@@ -295,6 +298,44 @@ void FinishGetAllBucketsDetails(
 
 }  // namespace
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+// Retains cross-sequence shutdown ownership without allowing a dropped task to
+// destroy either object on the wrong sequence. OnTaskRunnerDeleter deliberately
+// leaks when its target has stopped instead of performing an unsafe deletion;
+// the result-bearing close then withholds its completion.
+using IndexedDBContextOnTaskRunner =
+    std::unique_ptr<IndexedDBContextImpl, base::OnTaskRunnerDeleter>;
+using OnceClosureOnTaskRunner =
+    std::unique_ptr<base::OnceClosure, base::OnTaskRunnerDeleter>;
+
+class IndexedDBShutdownAndReplyState
+    : public base::RefCountedThreadSafe<IndexedDBShutdownAndReplyState> {
+ public:
+  IndexedDBShutdownAndReplyState(IndexedDBContextOnTaskRunner context,
+                                 OnceClosureOnTaskRunner completion)
+      : context(std::move(context)), completion(std::move(completion)) {}
+
+  IndexedDBContextOnTaskRunner context;
+  OnceClosureOnTaskRunner completion;
+
+  void HoldUntilFinished() {
+    CHECK(!self_reference_);
+    self_reference_ = base::WrapRefCounted(this);
+  }
+
+  void ReleaseHold() {
+    CHECK(self_reference_);
+    self_reference_.reset();
+  }
+
+ private:
+  friend class base::RefCountedThreadSafe<IndexedDBShutdownAndReplyState>;
+  ~IndexedDBShutdownAndReplyState() = default;
+
+  scoped_refptr<IndexedDBShutdownAndReplyState> self_reference_;
+};
+#endif
+
 IndexedDBContextImpl::IndexedDBContextImpl(
     const base::FilePath& base_data_path,
     scoped_refptr<storage::QuotaManagerProxy> quota_manager_proxy,
@@ -344,6 +385,15 @@ void IndexedDBContextImpl::BindPipesOnIDBSequence(
     mojo::PendingRemote<storage::mojom::FileSystemAccessContext>
         pending_file_system_access_context) {
   DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  if (shutdown_in_progress_) {
+    // The constructor posts this binding asynchronously. If a result-bearing
+    // shutdown wins that race, dropping the pending pipes keeps the quota and
+    // storage-service ingress sealed rather than reconnecting it after the
+    // close fence has begun.
+    return;
+  }
+#endif
   if (pending_quota_client_receiver) {
     quota_client_receiver_.Bind(std::move(pending_quota_client_receiver));
   }
@@ -359,6 +409,13 @@ void IndexedDBContextImpl::BindPipesOnIDBSequence(
 void IndexedDBContextImpl::BindControlOnIDBSequence(
     mojo::PendingReceiver<storage::mojom::IndexedDBControl> control) {
   DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  if (shutdown_in_progress_) {
+    // Dropping the unbound pipe makes a late client observe an explicit Mojo
+    // disconnect rather than admitting it after a result-bearing close began.
+    return;
+  }
+#endif
   // We cannot run this in the constructor it needs to be async, but the async
   // tasks might not finish before the destructor runs.
   InitializeFromFilesIfNeeded(base::DoNothing());
@@ -379,6 +436,15 @@ void IndexedDBContextImpl::BindIndexedDB(
     mojo::PendingRemote<storage::mojom::IndexedDBClientStateChecker>
         client_state_checker_remote,
     mojo::PendingReceiver<blink::mojom::IDBFactory> receiver) {
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+  if (shutdown_in_progress_) {
+    // The pending receiver is intentionally dropped so the client observes a
+    // disconnected endpoint. A close fence must never acknowledge while it
+    // silently admits another bucket or receiver.
+    return;
+  }
+#endif
   // Fast path when the `BucketContext` already exists.
   auto iter = bucket_contexts_.find(bucket_locator);
   if (iter != bucket_contexts_.end()) {
@@ -412,6 +478,14 @@ void IndexedDBContextImpl::BindIndexedDBImpl(
         client_state_checker_remote,
     mojo::PendingReceiver<blink::mojom::IDBFactory> pending_receiver,
     storage::QuotaErrorOr<storage::BucketInfo> bucket_info) {
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+  if (shutdown_in_progress_) {
+    // An UpdateOrCreateBucket reply that raced the close fence is explicitly
+    // rejected by dropping its pending factory receiver.
+    return;
+  }
+#endif
   std::optional<storage::BucketInfo> bucket;
   if (bucket_info.has_value()) {
     bucket = bucket_info.value();
@@ -433,6 +507,15 @@ void IndexedDBContextImpl::DeleteBucketData(const BucketLocator& bucket_locator,
                                             DeleteBucketDataCallback callback) {
   DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
   DCHECK(!callback.is_null());
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  if (shutdown_in_progress_) {
+    // A quota request already dispatched before its receiver was reset must
+    // not delete profile files while the result-bearing close is waiting for
+    // bucket destruction.
+    std::move(callback).Run(blink::mojom::QuotaStatusCode::kErrorAbort);
+    return;
+  }
+#endif
   ForceClose(
       bucket_locator,
       /*delete_bucket_data=*/true,
@@ -468,6 +551,15 @@ void IndexedDBContextImpl::DidForceCloseForDeleteBucketData(
 
 void IndexedDBContextImpl::ForceClose(storage::BucketId bucket_id,
                                       base::OnceClosure closure) {
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+  if (shutdown_in_progress_) {
+    // This is a control-receiver operation. The receiver has been cleared, so
+    // returning without its success callback makes a raced request observe a
+    // disconnect instead of claiming a close completed after the fence.
+    return;
+  }
+#endif
   std::optional<BucketLocator> bucket_locator = LookUpBucket(bucket_id);
   if (bucket_locator) {
     ForceClose(*bucket_locator, /*delete_bucket_data=*/false,
@@ -504,6 +596,12 @@ void IndexedDBContextImpl::ForceClose(const storage::BucketLocator& bucket,
 void IndexedDBContextImpl::StartMetadataRecording(
     storage::BucketId bucket_id,
     StartMetadataRecordingCallback callback) {
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+  if (shutdown_in_progress_) {
+    return;
+  }
+#endif
   base::SequenceBound<BucketContext>* context =
       GetBucketContextForTesting(bucket_id);  // IN-TEST
   if (context) {
@@ -518,6 +616,12 @@ void IndexedDBContextImpl::StartMetadataRecording(
 void IndexedDBContextImpl::StopMetadataRecording(
     storage::BucketId bucket_id,
     StopMetadataRecordingCallback callback) {
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+  if (shutdown_in_progress_) {
+    return;
+  }
+#endif
   pending_bucket_recording_.erase(bucket_id);
   base::SequenceBound<BucketContext>* context =
       GetBucketContextForTesting(bucket_id);  // IN-TEST
@@ -532,6 +636,12 @@ void IndexedDBContextImpl::StopMetadataRecording(
 void IndexedDBContextImpl::DownloadBucketData(
     storage::BucketId bucket_id,
     DownloadBucketDataCallback callback) {
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+  if (shutdown_in_progress_) {
+    return;
+  }
+#endif
   bool success = false;
 
   std::optional<BucketLocator> bucket_locator = LookUpBucket(bucket_id);
@@ -566,6 +676,11 @@ void IndexedDBContextImpl::DownloadBucketData(
 void IndexedDBContextImpl::GetAllBucketsDetails(
     GetAllBucketsDetailsCallback callback) {
   DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  if (shutdown_in_progress_) {
+    return;
+  }
+#endif
   InitializeFromFilesIfNeeded(base::BindOnce(
       [](base::WeakPtr<IndexedDBContextImpl> handler,
          GetAllBucketsDetailsCallback callback) {
@@ -625,12 +740,22 @@ void IndexedDBContextImpl::ContinueGetAllBucketsDetails(
 
 void IndexedDBContextImpl::SetForceKeepSessionState() {
   DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  if (shutdown_in_progress_) {
+    return;
+  }
+#endif
   force_keep_session_state_ = true;
 }
 
 void IndexedDBContextImpl::ApplyPolicyUpdates(
     std::vector<storage::mojom::StoragePolicyUpdatePtr> policy_updates) {
   DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  if (shutdown_in_progress_) {
+    return;
+  }
+#endif
   for (const storage::mojom::StoragePolicyUpdatePtr& update : policy_updates) {
     if (!update->purge_on_shutdown) {
       origins_to_purge_on_shutdown_.erase(update->origin);
@@ -643,6 +768,11 @@ void IndexedDBContextImpl::ApplyPolicyUpdates(
 void IndexedDBContextImpl::BindTestInterfaceForTesting(
     mojo::PendingReceiver<storage::mojom::IndexedDBControlTest> receiver) {
   DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  if (shutdown_in_progress_) {
+    return;
+  }
+#endif
   test_receivers_.Add(this, std::move(receiver));
 }
 
@@ -653,7 +783,11 @@ void IndexedDBContextImpl::AddObserver(
       base::BindOnce(
           [](base::WeakPtr<IndexedDBContextImpl> context,
              mojo::PendingRemote<storage::mojom::IndexedDBObserver> observer) {
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+            if (context && !context->shutdown_in_progress_) {
+#else
             if (context) {
+#endif
               context->observers_.Add(std::move(observer));
             }
           },
@@ -854,6 +988,9 @@ IndexedDBContextImpl::~IndexedDBContextImpl() {
   // other callbacks) so that `ForceClose()` below doesn't mutate
   // `bucket_contexts_` while it's being iterated.
   weak_factory_.InvalidateWeakPtrs();
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  detached_bucket_destruction_weak_factory_.InvalidateWeakPtrs();
+#endif
 
   base::RepeatingClosure barrier;
   if (shutdown_timer_) {
@@ -936,6 +1073,242 @@ void IndexedDBContextImpl::Shutdown(
                      base::BindOnce(&IndexedDBContextImpl::PurgeOrigins,
                                     std::move(context))));
 }
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+// static
+bool IndexedDBContextImpl::ShutdownAndReply(
+    std::unique_ptr<IndexedDBContextImpl>* context,
+    base::OnceClosure completion) {
+  CHECK(context);
+  CHECK(*context);
+  CHECK(completion);
+
+  // Important: This function is NOT called on the IDB Task Runner. Retain an
+  // extra state reference in the caller until PostTask() reports acceptance.
+  // If an accepted task is later discarded during task-runner shutdown, the
+  // state uses target-sequence deleters to quarantine its ownership rather
+  // than destructing an IndexedDBContextImpl off its IDB sequence.
+  scoped_refptr<base::SequencedTaskRunner> idb_task_runner =
+      (*context)->idb_task_runner();
+  scoped_refptr<IndexedDBShutdownAndReplyState> state =
+      base::MakeRefCounted<IndexedDBShutdownAndReplyState>(
+          IndexedDBContextOnTaskRunner(
+              context->release(), base::OnTaskRunnerDeleter(idb_task_runner)),
+          OnceClosureOnTaskRunner(
+              new base::OnceClosure(std::move(completion)),
+              base::OnTaskRunnerDeleter(idb_task_runner)));
+  if (!idb_task_runner->PostTask(
+          FROM_HERE,
+          base::BindOnce(
+              [](scoped_refptr<IndexedDBShutdownAndReplyState> state) {
+                std::unique_ptr<IndexedDBContextImpl> context(
+                    state->context.release());
+                std::unique_ptr<base::OnceClosure> completion(
+                    state->completion.release());
+                CHECK(context);
+                CHECK(completion);
+                context->ShutdownAndReplyOnIDBSequence(
+                    std::move(context), std::move(*completion));
+              },
+              state))) {
+    *context = std::unique_ptr<IndexedDBContextImpl>(state->context.release());
+    delete state->completion.release();
+    return false;
+  }
+  return true;
+}
+
+void IndexedDBContextImpl::ShutdownAndReplyOnIDBSequence(
+    std::unique_ptr<IndexedDBContextImpl> context,
+    base::OnceClosure completion) {
+  DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+  CHECK_EQ(context.get(), this);
+  CHECK(completion);
+  CHECK(!shutdown_in_progress_);
+
+  // Keep result-close ownership separate from the context itself. Waiting for
+  // a BucketContext that was detached before this task ran must not leave a
+  // self-owning closure inside |this|. The state deliberately retains itself
+  // until FinishShutdownAndReply(); a lost child acknowledgement consequently
+  // withholds completion and quarantines this context rather than allowing an
+  // unsafe profile handoff.
+  scoped_refptr<IndexedDBShutdownAndReplyState> state =
+      base::MakeRefCounted<IndexedDBShutdownAndReplyState>(
+          IndexedDBContextOnTaskRunner(
+              context.release(), base::OnTaskRunnerDeleter(idb_task_runner())),
+          OnceClosureOnTaskRunner(
+              new base::OnceClosure(std::move(completion)),
+              base::OnTaskRunnerDeleter(idb_task_runner())));
+  state->HoldUntilFinished();
+  shutdown_and_reply_state_ = state.get();
+
+  // Stop ingress before this close path snapshots live buckets. In particular,
+  // a renderer's queued BindIndexedDB() or delayed quota reply must not create
+  // or reattach a bucket while the ForceClose barrier is outstanding.
+  shutdown_in_progress_ = true;
+  control_receivers_.Clear();
+  test_receivers_.Clear();
+  quota_client_receiver_.reset();
+
+  if (!in_memory()) {
+    shutdown_timer_ = base::ElapsedTimer();
+  }
+
+  // This also waits for a previously-started profile scan. A close receipt
+  // cannot race a pending InitializeFromFilesIfNeeded() quota lookup and then
+  // hand off the profile filesystem while that lookup still owns work.
+  InitializeFromFilesIfNeeded(base::BindOnce(
+      &IndexedDBContextImpl::ContinueShutdownAndReplyAfterInitialization,
+      base::Unretained(this)));
+}
+
+void IndexedDBContextImpl::ContinueShutdownAndReplyAfterInitialization() {
+  DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+  CHECK(shutdown_and_reply_state_);
+
+  // A normal idle close may have erased a SequenceBound from
+  // |bucket_contexts_| before this shutdown task ran. Its BucketContext can
+  // still be destructing on the path's bucket sequence. Wait for each such
+  // post-destruction acknowledgement before a purge can delete its files or a
+  // result can hand the profile to another owner.
+  if (!detached_bucket_context_generations_.empty()) {
+    CHECK(!on_detached_bucket_contexts_destroyed_);
+    on_detached_bucket_contexts_destroyed_ = base::BindOnce(
+        &IndexedDBContextImpl::ContinueShutdownAndReplyAfterDetachedBucketContextsClosed,
+        base::Unretained(this));
+    return;
+  }
+
+  ContinueShutdownAndReplyAfterDetachedBucketContextsClosed();
+}
+
+void IndexedDBContextImpl::
+    ContinueShutdownAndReplyAfterDetachedBucketContextsClosed() {
+  DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+  CHECK(shutdown_and_reply_state_);
+  CHECK(detached_bucket_context_generations_.empty());
+
+  if (force_keep_session_state_ || origins_to_purge_on_shutdown_.empty() ||
+      in_memory()) {
+    CloseBucketContextsAndReply();
+    return;
+  }
+
+  PurgeOriginsAndReply();
+}
+
+void IndexedDBContextImpl::PurgeOriginsAndReply() {
+  DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+  CHECK(shutdown_and_reply_state_);
+  CHECK(detached_bucket_context_generations_.empty());
+
+  std::vector<BucketLocator> buckets_to_purge;
+  for (const BucketLocator& bucket_locator : bucket_set_) {
+    bool delete_bucket = origins_to_purge_on_shutdown_.contains(
+        bucket_locator.storage_key.origin());
+    if (!delete_bucket && bucket_locator.storage_key.IsThirdPartyContext()) {
+      delete_bucket = std::ranges::any_of(
+          origins_to_purge_on_shutdown_, [&](const url::Origin& origin) {
+            return bucket_locator.storage_key.top_level_site().IsSameSiteWith(
+                origin);
+          });
+    }
+    if (delete_bucket) {
+      buckets_to_purge.push_back(bucket_locator);
+    }
+  }
+
+  if (buckets_to_purge.empty()) {
+    CloseBucketContextsAndReply();
+    return;
+  }
+
+  base::RepeatingClosure purge_barrier = base::BarrierClosure(
+      buckets_to_purge.size(),
+      base::BindPostTask(
+          idb_task_runner(),
+          base::BindOnce(&IndexedDBContextImpl::CloseBucketContextsAndReply,
+                         base::Unretained(this))));
+  for (const BucketLocator& bucket_locator : buckets_to_purge) {
+    ForceClose(bucket_locator, /*delete_bucket_data=*/true, purge_barrier);
+  }
+}
+
+void IndexedDBContextImpl::CloseBucketContextsAndReply() {
+  DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+  CHECK(shutdown_and_reply_state_);
+  CHECK(detached_bucket_context_generations_.empty());
+
+  // This is intentionally idempotent with the earlier ingress fence. Keep
+  // ready-for-destruction callbacks from mutating the map while its exact
+  // shutdown close fence is waiting for every bucket.
+  weak_factory_.InvalidateWeakPtrs();
+
+  if (bucket_contexts_.empty()) {
+    FinishShutdownAndReply();
+    return;
+  }
+
+  scoped_refptr<base::SequencedTaskRunner> idb_runner =
+      idb_task_runner();
+
+  // Each bucket's destruction acknowledgement is scheduled from its
+  // destructor and delayed by one bucket-sequence task. The terminal callback
+  // therefore runs only after every SequenceBound child object has actually
+  // finished destruction, not merely after its ForceClose() reply.
+  base::RepeatingClosure destruction_barrier = base::BarrierClosure(
+      bucket_contexts_.size(),
+      base::BindPostTask(
+          idb_runner,
+          base::BindOnce(
+              &IndexedDBContextImpl::FinishShutdownAndReply,
+              base::Unretained(this))));
+
+  // First wait for every bucket to seal receiver ingress and synchronously
+  // reset its backing store. Only then clear the SequenceBounds, which starts
+  // the second, object-destruction barrier above.
+  base::RepeatingClosure seal_barrier = base::BarrierClosure(
+      bucket_contexts_.size(),
+      base::BindPostTask(
+          idb_runner,
+          base::BindOnce(
+              [](IndexedDBContextImpl* context) {
+                DCHECK(context->idb_task_runner()->RunsTasksInCurrentSequence());
+                context->bucket_contexts_.clear();
+              },
+              base::Unretained(this))));
+  for (auto& [_, bucket_context] : bucket_contexts_) {
+    bucket_context.AsyncCall(&BucketContext::SealForContextShutdown)
+        .WithArgs(base::BindPostTask(
+            idb_runner,
+            base::BindOnce(
+                [](base::RepeatingClosure destruction_barrier) {
+                  destruction_barrier.Run();
+                },
+                destruction_barrier)))
+        .Then(seal_barrier);
+  }
+}
+
+void IndexedDBContextImpl::FinishShutdownAndReply() {
+  DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+  CHECK(shutdown_and_reply_state_);
+  CHECK(detached_bucket_context_generations_.empty());
+  CHECK(bucket_contexts_.empty());
+
+  scoped_refptr<IndexedDBShutdownAndReplyState> state =
+      base::WrapRefCounted(shutdown_and_reply_state_);
+  shutdown_and_reply_state_ = nullptr;
+  std::unique_ptr<IndexedDBContextImpl> context(state->context.release());
+  std::unique_ptr<base::OnceClosure> completion(state->completion.release());
+  CHECK_EQ(context.get(), this);
+  CHECK(completion);
+
+  context.reset();
+  std::move(*completion).Run();
+  state->ReleaseHold();
+}
+#endif
 
 void IndexedDBContextImpl::NotifyOfBucketModification(
     const BucketLocator& bucket_locator) {
@@ -1127,10 +1500,43 @@ void IndexedDBContextImpl::FillInBucketMetadata(
 
 void IndexedDBContextImpl::DestroyBucketContext(
     storage::BucketLocator bucket_locator) {
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  if (shutdown_in_progress_) {
+    return;
+  }
+  auto bucket_context = bucket_contexts_.find(bucket_locator);
+  if (bucket_context == bucket_contexts_.end()) {
+    return;
+  }
+  auto generation = bucket_context_generations_.find(bucket_locator);
+  CHECK(generation != bucket_context_generations_.end());
+  CHECK(detached_bucket_context_generations_.insert(generation->second).second);
+  bucket_context_generations_.erase(generation);
+  bucket_contexts_.erase(bucket_context);
+#else
   bucket_contexts_.erase(bucket_locator);
+#endif
   task_runner_limiters_[bucket_locator.storage_key.top_level_site()]
       .active_bucket_count--;
 }
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+void IndexedDBContextImpl::OnDetachedBucketContextDestroyed(
+    uint64_t generation) {
+  DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+  if (!detached_bucket_context_generations_.erase(generation)) {
+    // A live BucketContext sealed by CloseBucketContextsAndReply() also emits
+    // its generic post-destruction notification. Only generations detached
+    // before the shutdown fence are outstanding here.
+    return;
+  }
+
+  if (detached_bucket_context_generations_.empty() &&
+      on_detached_bucket_contexts_destroyed_) {
+    std::move(on_detached_bucket_contexts_destroyed_).Run();
+  }
+}
+#endif
 
 void IndexedDBContextImpl::EnsureBucketContext(
     const storage::BucketInfo& bucket) {
@@ -1190,10 +1596,36 @@ void IndexedDBContextImpl::EnsureBucketContext(
   base::FilePath bucket_key = GetStoragePaths(bucket_locator).front();
   bucket_task_runner = GetTaskRunnerMap().GetTaskRunner(
       bucket_key, std::move(bucket_task_runner));
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  const uint64_t bucket_context_generation =
+      next_bucket_context_generation_++;
+  CHECK(bucket_context_generations_
+            .emplace(bucket_locator, bucket_context_generation)
+            .second);
+  bucket_delegate.on_destroyed_after_destruction = base::BindOnce(
+      [](base::FilePath bucket_key,
+         scoped_refptr<base::SequencedTaskRunner> idb_task_runner,
+         base::WeakPtr<IndexedDBContextImpl> context,
+         uint64_t generation) {
+        // This callback runs in a task sequenced after BucketContext's
+        // destructor has returned. Do not let a fresh context for this path
+        // select a new runner until the old object's full destruction ended.
+        GetTaskRunnerMap().MaybeCleanupTaskRunner(std::move(bucket_key));
+        (void)idb_task_runner->PostTask(
+            FROM_HERE,
+            base::BindOnce(
+                &IndexedDBContextImpl::OnDetachedBucketContextDestroyed,
+                std::move(context), generation));
+      },
+      bucket_key, idb_task_runner_,
+      detached_bucket_destruction_weak_factory_.GetWeakPtr(),
+      bucket_context_generation);
+#else
   // Note that this one can run on any sequence.
   bucket_delegate.on_destroyed =
       base::BindOnce(&TaskRunnerMap::MaybeCleanupTaskRunner,
                      base::Unretained(&GetTaskRunnerMap()), bucket_key);
+#endif
 
   const auto& [iter, inserted] = bucket_contexts_.emplace(
       bucket_locator,
@@ -1218,6 +1650,13 @@ void IndexedDBContextImpl::EnsureBucketContext(
 
 void IndexedDBContextImpl::GetBucketUsage(const BucketLocator& bucket_locator,
                                           GetBucketUsageCallback callback) {
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+  if (shutdown_in_progress_) {
+    std::move(callback).Run(0);
+    return;
+  }
+#endif
   if (!LookUpBucket(bucket_locator.id)) {
     std::move(callback).Run(0);
     return;
@@ -1258,6 +1697,13 @@ void IndexedDBContextImpl::GetBucketUsage(const BucketLocator& bucket_locator,
 
 void IndexedDBContextImpl::GetDefaultStorageKeys(
     GetDefaultStorageKeysCallback callback) {
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+  if (shutdown_in_progress_) {
+    std::move(callback).Run({});
+    return;
+  }
+#endif
   std::vector<StorageKey> storage_keys;
   storage_keys.reserve(bucket_set_.size());
   for (const BucketLocator& bucket_locator : bucket_set_) {
@@ -1268,6 +1714,13 @@ void IndexedDBContextImpl::GetDefaultStorageKeys(
 
 void IndexedDBContextImpl::PerformStorageCleanup(
     PerformStorageCleanupCallback callback) {
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  DCHECK(idb_task_runner()->RunsTasksInCurrentSequence());
+  if (shutdown_in_progress_) {
+    std::move(callback).Run();
+    return;
+  }
+#endif
   // IndexedDB doesn't need to do anything because all traces of data are
   // already removed when a bucket is deleted. This hook exists for databases
   // like LocalStorage where data across many origins are stored in a single

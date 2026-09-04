@@ -121,7 +121,17 @@ class CONTENT_EXPORT BucketContext
     Delegate(const Delegate&) = delete;
     Delegate& operator=(const Delegate&) = delete;
 
+    // Invoked from the BucketContext destructor before its member subobjects
+    // have finished destruction.
     base::OnceClosure on_destroyed;
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+    // Posted to the bucket sequence from the BucketContext destructor, so it
+    // runs only after the destructor has returned. This is used for the
+    // task-runner-map cleanup and result-bearing context shutdown receipts.
+    // If the bucket sequence cannot accept the task, the callback is dropped.
+    base::OnceClosure on_destroyed_after_destruction;
+#endif
 
     // Called when the bucket context is ready to be destroyed. After this is
     // called, the bucket context will no longer accept new IDBFactory
@@ -183,6 +193,17 @@ class CONTENT_EXPORT BucketContext
   // crbug.com/340398745.
   static void InsertTeardownStepForTesting(base::OnceClosure on_teardown);
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // Inserts an extra step in the BucketContext destructor immediately before
+  // its destruction delegate runs.
+  static void InsertDestructionStepForTesting(base::OnceClosure on_destroyed);
+
+  // Inserts an extra step after all BucketContext members have been destroyed.
+  // This is used to verify post-destruction shutdown acknowledgements.
+  static void InsertFinalDestructionStepForTesting(
+      base::OnceClosure on_destroyed);
+#endif
+
   static base::TimeDelta GetBackingStoreGracePeriodForTesting();
   static base::TimeDelta GetIdleTimeoutForTesting();
 
@@ -206,6 +227,15 @@ class CONTENT_EXPORT BucketContext
   // `doom` is true, it's expected that `this` will be deleted soon after. To
   // prevent races, `on_ready_for_destruction` is NOT called in this case.
   void ForceClose(bool doom);
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // Seals this BucketContext for a non-destructive IndexedDBContextImpl
+  // shutdown. It stops new IDBFactory ingress, resets the backing store, and
+  // invokes |on_destroyed| only after this BucketContext's destructor has
+  // returned. The acknowledgement is intentionally withheld if the bucket
+  // sequence cannot accept that final task.
+  void SealForContextShutdown(base::OnceClosure on_destroyed);
+#endif
 
   // Starts capturing state data for indexeddb-internals. The data will be
   // returned the next time `StopMetadataRecording()` is invoked.
@@ -338,6 +368,16 @@ class CONTENT_EXPORT BucketContext
   FRIEND_TEST_ALL_PREFIXES(BucketContextTest, MetadataRecordingStateHistory);
   FRIEND_TEST_ALL_PREFIXES(BucketContextTest,
                            OverrideShouldUseSqliteForTesting);
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  struct FinalDestructionStepForTesting {
+    ~FinalDestructionStepForTesting();
+  };
+
+  // This must be the first non-static data member, so it is destroyed after
+  // every other BucketContext member has been destroyed.
+  FinalDestructionStepForTesting final_destruction_step_for_testing_;
+#endif
 
   // Overrides the rollout stage for this instance only. Must be called before
   // backing store initialization.
@@ -492,6 +532,13 @@ class CONTENT_EXPORT BucketContext
   base::Time metadata_recording_start_time_;
 
   mojo::ReceiverSet<blink::mojom::IDBFactory, ReceiverContext> receivers_;
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // Set on the bucket sequence by SealForContextShutdown(). It defends against
+  // an already-dispatched IDBFactory request reinitializing |backing_store_|
+  // after the receiver set has been sealed.
+  bool context_shutdown_in_progress_ = false;
+#endif
 
   base::WeakPtrFactory<BucketContext> weak_factory_{this};
 };

@@ -46,6 +46,17 @@ class IndexedDBControlWrapper {
   // context if it does not already exist.
   storage::mojom::IndexedDBControl& GetIndexedDBControl();
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // Starts the result-bearing IndexedDBContextImpl close path. The callback
+  // runs on the IndexedDB task runner after every live bucket has sealed
+  // ingress, completed destruction, and the context has been destroyed. The
+  // wrapper may be safely destroyed after this returns. An accepted close is
+  // terminal: policy observation and the control pipe are removed, and late
+  // BindIndexedDB() calls are disconnected. It is not a broader
+  // StoragePartition shutdown receipt.
+  bool ShutdownAndReply(base::OnceClosure completion);
+#endif
+
  private:
   void OnSpecialStoragePolicyUpdated(
       std::vector<storage::mojom::StoragePolicyUpdatePtr> policy_updates);

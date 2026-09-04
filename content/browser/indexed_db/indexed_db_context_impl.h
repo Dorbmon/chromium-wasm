@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "base/files/file_path.h"
+#include "base/functional/callback_forward.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/weak_ptr.h"
 #include "base/threading/sequence_bound.h"
@@ -49,6 +50,10 @@ class QuotaClientCallbackWrapper;
 
 namespace content::indexed_db {
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+class IndexedDBShutdownAndReplyState;
+#endif
+
 // This class manages all the active/open backing stores for IndexedDB, of which
 // there is at most one per bucket. It also serves as the central liaison to
 // other Chromium components such as the quota manager. It runs on its own
@@ -73,6 +78,21 @@ class CONTENT_EXPORT IndexedDBContextImpl
 
   // Called to initiate shutdown. This is *not* called on the idb_task_runner.
   static void Shutdown(std::unique_ptr<IndexedDBContextImpl> context);
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // Starts shutdown and invokes |completion| on the IndexedDB task runner only
+  // after every live or already-detached BucketContext has stopped owning its
+  // backing store and completed destruction, and this IndexedDBContextImpl has
+  // been destroyed. Unlike Shutdown(), this is a result-bearing close path for
+  // callers that must not hand off a profile filesystem while this context
+  // still owns a live bucket backing store. New IndexedDB control and quota
+  // receivers are closed before the close fence starts. It is not an fsync or
+  // broader StoragePartition shutdown acknowledgement.
+  // Returns false without consuming |context| if the IDB task runner refuses
+  // the initial close task. This is *not* called on the idb_task_runner.
+  static bool ShutdownAndReply(std::unique_ptr<IndexedDBContextImpl>* context,
+                               base::OnceClosure completion);
+#endif
 
   IndexedDBContextImpl(const IndexedDBContextImpl&) = delete;
   IndexedDBContextImpl& operator=(const IndexedDBContextImpl&) = delete;
@@ -190,6 +210,20 @@ class CONTENT_EXPORT IndexedDBContextImpl
                              base::OnceClosure purge_origins);
   void PurgeOrigins();
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // The result-bearing counterpart to the ordinary shutdown path. The bound
+  // |context| owns |this| through every asynchronous reply until the final
+  // child-destruction acknowledgement runs on the IndexedDB sequence.
+  void ShutdownAndReplyOnIDBSequence(
+      std::unique_ptr<IndexedDBContextImpl> context,
+      base::OnceClosure completion);
+  void ContinueShutdownAndReplyAfterInitialization();
+  void ContinueShutdownAndReplyAfterDetachedBucketContextsClosed();
+  void PurgeOriginsAndReply();
+  void CloseBucketContextsAndReply();
+  void FinishShutdownAndReply();
+#endif
+
   base::FilePath GetDataPath(
       const storage::BucketLocator& bucket_locator) const;
   const base::FilePath GetLegacyDataPath() const;
@@ -260,6 +294,9 @@ class CONTENT_EXPORT IndexedDBContextImpl
       const std::u16string& object_store_name);
 
   void DestroyBucketContext(storage::BucketLocator bucket_locator);
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  void OnDetachedBucketContextDestroyed(uint64_t generation);
+#endif
 
   std::optional<storage::BucketLocator> LookUpBucket(
       storage::BucketId bucket_id);
@@ -319,6 +356,19 @@ class CONTENT_EXPORT IndexedDBContextImpl
   mojo::ReceiverSet<storage::mojom::IndexedDBControl> control_receivers_;
   mojo::ReceiverSet<storage::mojom::IndexedDBControlTest> test_receivers_;
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // Set only on |idb_task_runner()| by ShutdownAndReplyOnIDBSequence(). It
+  // closes control and quota receivers and rejects an already-dispatched
+  // request before the result-bearing close fence snapshots
+  // |bucket_contexts_|.
+  bool shutdown_in_progress_ = false;
+
+  // A result-bearing close retains itself in this state while waiting for
+  // queued destruction acknowledgements. It is non-owning: the state owns
+  // this context and deliberately holds itself until FinishShutdownAndReply().
+  IndexedDBShutdownAndReplyState* shutdown_and_reply_state_ = nullptr;
+#endif
+
   mojo::RemoteSet<storage::mojom::IndexedDBObserver> observers_;
 
   // For testing: when non-null, this receiver will be passed off to the next
@@ -330,6 +380,21 @@ class CONTENT_EXPORT IndexedDBContextImpl
            base::SequenceBound<BucketContext>,
            storage::CompareBucketLocators>
       bucket_contexts_;
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // A BucketContext can leave |bucket_contexts_| before its asynchronous
+  // SequenceBound destruction finishes. Track that generation until its
+  // post-destruction bucket-sequence acknowledgement returns to the IDB
+  // sequence, so a result-bearing close never hands off profile storage while
+  // such a child still owns it.
+  std::map<storage::BucketLocator,
+           uint64_t,
+           storage::CompareBucketLocators>
+      bucket_context_generations_;
+  std::set<uint64_t> detached_bucket_context_generations_;
+  base::OnceClosure on_detached_bucket_contexts_destroyed_;
+  uint64_t next_bucket_context_generation_ = 0;
+#endif
 
   // For the most part, every bucket gets its own SequencedTaskRunner. But each
   // "site", i.e. StorageKey's `top_level_site()`, has a cap on the number of
@@ -362,6 +427,14 @@ class CONTENT_EXPORT IndexedDBContextImpl
   // weak_factory_->GetWeakPtr() may be used on any thread, but the resulting
   // pointer must only be checked/used on idb_task_runner_.
   base::WeakPtrFactory<IndexedDBContextImpl> weak_factory_{this};
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // Unlike |weak_factory_|, this remains valid through the result-bearing
+  // close fence so a pre-detached BucketContext can acknowledge its full
+  // destruction. It is invalidated when this context starts destruction.
+  base::WeakPtrFactory<IndexedDBContextImpl>
+      detached_bucket_destruction_weak_factory_{this};
+#endif
 };
 
 }  // namespace content::indexed_db

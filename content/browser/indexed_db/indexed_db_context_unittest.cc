@@ -2,10 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <atomic>
 #include <memory>
 
 #include "base/barrier_closure.h"
 #include "base/files/file_util.h"
+#include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
@@ -13,10 +15,12 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
 #include "base/test/test_future.h"
+#include "base/test/null_task_runner.h"
 #include "components/services/storage/public/cpp/buckets/bucket_info.h"
 #include "components/services/storage/public/cpp/buckets/bucket_locator.h"
 #include "components/services/storage/public/cpp/buckets/constants.h"
 #include "components/services/storage/public/cpp/quota_error_or.h"
+#include "components/services/storage/public/mojom/storage_policy_update.mojom.h"
 #include "content/browser/indexed_db/file_path_util.h"
 #include "content/browser/indexed_db/indexed_db_context_impl.h"
 #include "content/browser/indexed_db/indexed_db_test_base.h"
@@ -198,6 +202,185 @@ TEST_F(IndexedDBContextTest, ShutdownDurationHistogramWithBucket) {
                .size() == 1u;
   }));
 }
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+TEST_F(IndexedDBContextTest, ShutdownAndReplyWaitsForBucketDestruction) {
+  base::HistogramTester histogram_tester;
+  InitBucketContext();
+  auto teardown_step_ran = std::make_shared<std::atomic_bool>(false);
+  auto destruction_step_ran = std::make_shared<std::atomic_bool>(false);
+  auto final_destruction_step_ran =
+      std::make_shared<std::atomic_bool>(false);
+  BucketContext::InsertTeardownStepForTesting(base::BindOnce(
+      [](std::shared_ptr<std::atomic_bool> teardown_step_ran) {
+        teardown_step_ran->store(true);
+      },
+      teardown_step_ran));
+  BucketContext::InsertDestructionStepForTesting(base::BindOnce(
+      [](std::shared_ptr<std::atomic_bool> destruction_step_ran) {
+        destruction_step_ran->store(true);
+      },
+      destruction_step_ran));
+  BucketContext::InsertFinalDestructionStepForTesting(base::BindOnce(
+      [](std::shared_ptr<std::atomic_bool> final_destruction_step_ran) {
+        final_destruction_step_ran->store(true);
+      },
+      final_destruction_step_ran));
+
+  base::RunLoop loop;
+  ASSERT_TRUE(IndexedDBContextImpl::ShutdownAndReply(
+      &context_,
+      base::BindOnce(
+          [](base::HistogramTester* histogram_tester,
+             std::shared_ptr<std::atomic_bool> teardown_step_ran,
+             std::shared_ptr<std::atomic_bool> destruction_step_ran,
+             std::shared_ptr<std::atomic_bool> final_destruction_step_ran,
+             base::OnceClosure quit_closure) {
+            // This hook runs only after BucketContext has reset and
+            // synchronously waited for its backing-store destruction. The
+            // second hook runs from BucketContext's destructor before its
+            // destruction delegate schedules the final acknowledgement; the
+            // third runs after all BucketContext members have been destroyed.
+            // Seeing all three in the direct IDB-sequence result callback
+            // proves that callback did not merely acknowledge the initial
+            // shutdown post or a ForceClose() reply.
+            EXPECT_TRUE(teardown_step_ran->load());
+            EXPECT_TRUE(destruction_step_ran->load());
+            EXPECT_TRUE(final_destruction_step_ran->load());
+            histogram_tester->ExpectTotalCount(
+                "IndexedDB.ContextShutdownDuration2", 1);
+            std::move(quit_closure).Run();
+          },
+          &histogram_tester, teardown_step_ran, destruction_step_ran,
+          final_destruction_step_ran,
+          loop.QuitClosure())));
+  loop.Run();
+}
+
+TEST_F(IndexedDBContextTest, ShutdownAndReplySealsFactoryIngress) {
+  storage::BucketInfo bucket =
+      GetOrCreateBucket(BucketParamsForStorageKey(example_storage_key_));
+  InitBucketContext(bucket);
+
+  mojo::Remote<blink::mojom::IDBFactory> factory;
+  mojo::Receiver<storage::mojom::IndexedDBClientStateChecker> checker_receiver(
+      &example_checker_);
+  BindFactory(checker_receiver.BindNewPipeAndPassRemote(),
+              factory.BindNewPipeAndPassReceiver(), bucket);
+  RunPostedTasks(bucket.ToBucketLocator());
+
+  base::RunLoop loop;
+  base::RepeatingClosure both_receipts =
+      base::BarrierClosure(2, loop.QuitClosure());
+  factory.set_disconnect_handler(base::BindOnce(
+      [](base::RepeatingClosure both_receipts) { both_receipts.Run(); },
+      both_receipts));
+
+  ASSERT_TRUE(IndexedDBContextImpl::ShutdownAndReply(
+      &context_,
+      base::BindOnce(
+          [](base::RepeatingClosure both_receipts) { both_receipts.Run(); },
+          both_receipts)));
+  loop.Run();
+}
+
+TEST_F(IndexedDBContextTest,
+       ShutdownAndReplyWaitsForAlreadyDetachedBucketDestruction) {
+  storage::BucketInfo bucket =
+      GetOrCreateBucket(BucketParamsForStorageKey(example_storage_key_));
+  base::WeakPtr<BucketContext> bucket_context = InitBucketContext(bucket);
+  auto destruction_step_ran = std::make_shared<std::atomic_bool>(false);
+  auto final_destruction_step_ran =
+      std::make_shared<std::atomic_bool>(false);
+  BucketContext::InsertDestructionStepForTesting(base::BindOnce(
+      [](std::shared_ptr<std::atomic_bool> destruction_step_ran) {
+        destruction_step_ran->store(true);
+      },
+      destruction_step_ran));
+  BucketContext::InsertFinalDestructionStepForTesting(base::BindOnce(
+      [](std::shared_ptr<std::atomic_bool> final_destruction_step_ran) {
+        final_destruction_step_ran->store(true);
+      },
+      final_destruction_step_ran));
+
+  // Queue the normal ready-for-destruction callback before the shutdown task.
+  // Its IDB task will erase the SequenceBound and schedule its child destructor
+  // after the result-close task, reproducing the map-detached lifetime race.
+  BucketContext* raw_bucket_context = GetBucketContext(bucket.id);
+  ASSERT_TRUE(raw_bucket_context);
+  std::move(raw_bucket_context->delegate().on_ready_for_destruction).Run();
+
+  base::RunLoop loop;
+  ASSERT_TRUE(IndexedDBContextImpl::ShutdownAndReply(
+      &context_,
+      base::BindOnce(
+          [](std::shared_ptr<std::atomic_bool> destruction_step_ran,
+             std::shared_ptr<std::atomic_bool> final_destruction_step_ran,
+             base::WeakPtr<BucketContext> bucket_context,
+             base::OnceClosure quit_closure) {
+            EXPECT_TRUE(destruction_step_ran->load());
+            EXPECT_TRUE(final_destruction_step_ran->load());
+            EXPECT_FALSE(bucket_context);
+            std::move(quit_closure).Run();
+          },
+          destruction_step_ran, final_destruction_step_ran, bucket_context,
+          loop.QuitClosure())));
+  loop.Run();
+}
+
+TEST_F(IndexedDBContextTest,
+       ShutdownAndReplySealsQueuedDestructionBeforePurge) {
+  storage::BucketInfo bucket =
+      GetOrCreateBucket(BucketParamsForStorageKey(example_storage_key_));
+  InitBucketContext(bucket);
+
+  // Make the result close's initialization barrier synchronous so the queued
+  // ready-for-destruction task below runs after the detached-generation
+  // snapshot, while PurgeOriginsAndReply() is already outstanding.
+  base::RunLoop initialized;
+  context()->ForceInitializeFromFilesForTesting(initialized.QuitClosure());
+  initialized.Run();
+
+  std::vector<storage::mojom::StoragePolicyUpdatePtr> policy_updates;
+  policy_updates.emplace_back(storage::mojom::StoragePolicyUpdate::New(
+      example_storage_key_.origin(), /*purge_on_shutdown=*/true));
+  context()->ApplyPolicyUpdates(std::move(policy_updates));
+
+  BucketContext* raw_bucket_context = GetBucketContext(bucket.id);
+  ASSERT_TRUE(raw_bucket_context);
+
+  base::RunLoop loop;
+  ASSERT_TRUE(IndexedDBContextImpl::ShutdownAndReply(
+      &context_, loop.QuitClosure()));
+
+  // This queues DestroyBucketContext() behind the initial shutdown task. The
+  // result close must set shutdown_in_progress_ before starting the
+  // asynchronous purge, so the queued normal callback cannot detach the
+  // SequenceBound while the purge is deleting this bucket's paths.
+  std::move(raw_bucket_context->delegate().on_ready_for_destruction).Run();
+  loop.Run();
+}
+
+TEST_F(IndexedDBContextTest, ShutdownAndReplyDoesNotConsumeOnRejectedPost) {
+  scoped_refptr<base::NullTaskRunner> null_task_runner =
+      base::MakeRefCounted<base::NullTaskRunner>();
+  std::unique_ptr<IndexedDBContextImpl> rejected_context =
+      std::make_unique<IndexedDBContextImpl>(
+          base::FilePath(), quota_manager_proxy_,
+          mojo::PendingRemote<storage::mojom::BlobStorageContext>(),
+          mojo::PendingRemote<storage::mojom::FileSystemAccessContext>(),
+          null_task_runner);
+  bool completion_ran = false;
+
+  EXPECT_FALSE(IndexedDBContextImpl::ShutdownAndReply(
+      &rejected_context,
+      base::BindOnce(
+          [](bool* completion_ran) { *completion_ran = true; },
+          &completion_ran)));
+  EXPECT_TRUE(rejected_context);
+  EXPECT_FALSE(completion_ran);
+}
+#endif
 
 TEST_F(IndexedDBContextTest, ShutdownDurationHistogramWithoutBucket) {
   base::HistogramTester histogram_tester;
