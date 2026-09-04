@@ -427,7 +427,7 @@ class EmscriptenSourcePinManifestTest(unittest.TestCase):
         )
         self.assertEqual(
             source_pin["revision"],
-            "b0b13cc49bb8cf13c898432ee983de3b14279785",
+            "ed5b07305e8b5090923e92aaa24911db4d515fca",
         )
         self.assertEqual(source_pin["version"], "5.0.6-git")
         self.assertEqual(
