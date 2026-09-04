@@ -97,6 +97,11 @@ class WasmProfileIndexedDBLifetimeParticipant {
   // IndexedDB close receipt. This is deliberately not a Cache Storage close or
   // durable-flush acknowledgement.
   bool DidRendererCacheAPIWriteAndReadbackSucceed() const;
+  // True only after the selected renderer Cache API object remained live
+  // through the browser-side backend close and CacheStorage index replacement
+  // callbacks. This is not an fsync, durable-flush, reload, recovery, or
+  // CacheStorage-wide shutdown acknowledgement.
+  bool DidRendererCacheAPIBackendCloseAndIndexReplacementSucceed() const;
 
  private:
   class State;

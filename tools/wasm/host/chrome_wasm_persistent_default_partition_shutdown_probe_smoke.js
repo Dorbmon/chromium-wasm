@@ -5,8 +5,9 @@
 // A one-document shutdown probe. Chromium constructs the real persistent
 // default StoragePartition, receives one direct LocalStorage map-update/close
 // receipt, one captured-config renderer IndexedDB write/selected-bucket-close
-// receipt plus a separate Cache API write/readback operation in that exact
-// renderer partition, followed by that default partition's complete IndexedDB
+// receipt plus a separate Cache API write/readback operation and exact
+// selected-cache-backend close/index-replacement receipt in that renderer
+// partition, followed by that default partition's complete IndexedDB
 // context-close receipt,
 // then one selected CookieManager write/flush, network-owned SQLite
 // row-readback, and backend-close receipt, then receives its real
@@ -14,8 +15,9 @@
 // StoragePartitionImplMap is absent, fences preferences, and deliberately
 // selects sealed/lease-retained failure retirement. This host verifies only
 // fixed stderr receipts and the clean nonzero process-exit acknowledgement. It
-// neither opens OPFS nor makes a Cache Storage close/flush, durable profile
-// flush, aggregate-close, reload, recovery, or permanent-map-absence claim.
+// neither opens OPFS nor makes a Cache Storage-wide close/flush, durable
+// profile flush, aggregate-close, reload, recovery, or permanent-map-absence
+// claim.
 
 const HOST_PROTOCOL = 1;
 const CASE = "chrome_persistent_default_partition_shutdown_probe_m7";
@@ -50,6 +52,9 @@ const PERSISTENT_INDEXED_DB_RENDERER_WRITE_AND_CLOSE_OK_MARKER =
 const PERSISTENT_CACHE_API_RENDERER_WRITE_AND_READBACK_OK_MARKER =
     SHUTDOWN_MARKER_PREFIX +
     "PERSISTENT_CACHE_API_RENDERER_WRITE_AND_READBACK_OK";
+const PERSISTENT_CACHE_API_SELECTED_BACKEND_CLOSE_AND_INDEX_REPLACED_OK_MARKER =
+    SHUTDOWN_MARKER_PREFIX +
+    "PERSISTENT_CACHE_API_SELECTED_BACKEND_CLOSE_AND_INDEX_REPLACED_OK";
 const PERSISTENT_INDEXED_DB_CONTEXT_CLOSED_MARKER =
     SHUTDOWN_MARKER_PREFIX + "PERSISTENT_INDEXED_DB_CONTEXT_CLOSED";
 const PERSISTENT_COOKIE_WRITE_ACCEPTED_MARKER =
@@ -81,6 +86,7 @@ const EXPECTED_MARKERS = Object.freeze([
   RENDERER_DEFAULT_PARTITION_CONFIG_REUSE_WITNESS_OK_MARKER,
   PERSISTENT_INDEXED_DB_RENDERER_WRITE_AND_CLOSE_OK_MARKER,
   PERSISTENT_CACHE_API_RENDERER_WRITE_AND_READBACK_OK_MARKER,
+  PERSISTENT_CACHE_API_SELECTED_BACKEND_CLOSE_AND_INDEX_REPLACED_OK_MARKER,
   PERSISTENT_INDEXED_DB_CONTEXT_CLOSED_MARKER,
   PERSISTENT_COOKIE_WRITE_ACCEPTED_MARKER,
   PERSISTENT_COOKIE_STORE_FLUSH_ACKNOWLEDGED_MARKER,
@@ -111,6 +117,7 @@ const RESULT_FIELDS = Object.freeze([
   "m7GateComplete", "nonzeroProcessExitAndAckProven",
   "partitionDestroyNotificationDispatchedProven", "partitionMapDroppedProven",
   "persistentDefaultPartitionCacheAPIWriteAndReadbackReceiptProven",
+  "persistentDefaultPartitionCacheAPISelectedBackendCloseAndIndexReplacementReceiptProven",
   "persistentDefaultPartitionCookieSQLiteRowReadbackProven",
   "persistentDefaultPartitionCookieStoreCloseReceiptProven",
   "persistentDefaultPartitionCookieStoreFlushAcknowledgedProven",
@@ -721,39 +728,43 @@ class PersistentDefaultPartitionShutdownProbeHost {
           lifecycleComplete &&
           this.run.markers[4] ===
               PERSISTENT_CACHE_API_RENDERER_WRITE_AND_READBACK_OK_MARKER,
+      persistentDefaultPartitionCacheAPISelectedBackendCloseAndIndexReplacementReceiptProven:
+          lifecycleComplete &&
+          this.run.markers[5] ===
+              PERSISTENT_CACHE_API_SELECTED_BACKEND_CLOSE_AND_INDEX_REPLACED_OK_MARKER,
       persistentDefaultPartitionIndexedDBContextCloseReceiptProven:
           lifecycleComplete &&
-          this.run.markers[5] === PERSISTENT_INDEXED_DB_CONTEXT_CLOSED_MARKER,
+          this.run.markers[6] === PERSISTENT_INDEXED_DB_CONTEXT_CLOSED_MARKER,
       persistentDefaultPartitionCookieWriteAcceptedProven:
           lifecycleComplete &&
-          this.run.markers[6] === PERSISTENT_COOKIE_WRITE_ACCEPTED_MARKER,
+          this.run.markers[7] === PERSISTENT_COOKIE_WRITE_ACCEPTED_MARKER,
       persistentDefaultPartitionCookieStoreFlushAcknowledgedProven:
           lifecycleComplete &&
-          this.run.markers[7] ===
+          this.run.markers[8] ===
               PERSISTENT_COOKIE_STORE_FLUSH_ACKNOWLEDGED_MARKER,
       persistentDefaultPartitionCookieSQLiteRowReadbackProven:
           lifecycleComplete &&
-          this.run.markers[8] === PERSISTENT_COOKIE_SQLITE_ROW_READBACK_OK_MARKER,
+          this.run.markers[9] === PERSISTENT_COOKIE_SQLITE_ROW_READBACK_OK_MARKER,
       persistentDefaultPartitionCookieStoreCloseReceiptProven:
           lifecycleComplete &&
-          this.run.markers[9] === PERSISTENT_COOKIE_STORE_CLOSED_MARKER,
+          this.run.markers[10] === PERSISTENT_COOKIE_STORE_CLOSED_MARKER,
       creationSealProven:
           lifecycleComplete &&
-          this.run.markers[10] === PARTITION_CREATION_SEALED_MARKER,
+          this.run.markers[11] === PARTITION_CREATION_SEALED_MARKER,
       partitionDestroyNotificationDispatchedProven:
           lifecycleComplete &&
-          this.run.markers[12] === PARTITION_DESTROY_NOTIFICATION_DISPATCHED_MARKER,
+          this.run.markers[13] === PARTITION_DESTROY_NOTIFICATION_DISPATCHED_MARKER,
       partitionMapDroppedProven:
           lifecycleComplete &&
-          this.run.markers[13] === PARTITION_MAP_DROPPED_MARKER,
+          this.run.markers[14] === PARTITION_MAP_DROPPED_MARKER,
       preferencesFenceProven:
-          lifecycleComplete && this.run.markers[14] === PREFERENCES_FENCE_OK_MARKER,
+          lifecycleComplete && this.run.markers[15] === PREFERENCES_FENCE_OK_MARKER,
       sealedLeaseRetainedReceiptProven:
           lifecycleComplete &&
-          this.run.markers[15] === SEALED_LEASE_RETAINED_MARKER,
+          this.run.markers[16] === SEALED_LEASE_RETAINED_MARKER,
       failClosedRetirementProven:
           lifecycleComplete &&
-          this.run.markers[16] === FAIL_CLOSED_RETIREMENT_MARKER,
+          this.run.markers[17] === FAIL_CLOSED_RETIREMENT_MARKER,
       structuralShutdownWitnessProven: lifecycleComplete,
       nonzeroProcessExitAndAckProven: lifecycleComplete,
       aggregatePartitionCloseProven: false,
@@ -922,6 +933,8 @@ export function validateChromeWasmPersistentDefaultPartitionShutdownProbeResult(
       result.persistentDefaultPartitionIndexedDBRendererWriteAndCloseReceiptProven !==
           true ||
       result.persistentDefaultPartitionCacheAPIWriteAndReadbackReceiptProven !==
+          true ||
+      result.persistentDefaultPartitionCacheAPISelectedBackendCloseAndIndexReplacementReceiptProven !==
           true ||
       result.persistentDefaultPartitionIndexedDBContextCloseReceiptProven !==
           true ||

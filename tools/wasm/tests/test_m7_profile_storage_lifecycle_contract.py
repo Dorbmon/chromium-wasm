@@ -1751,6 +1751,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "RENDERER_DEFAULT_PARTITION_CONFIG_REUSE_WITNESS_OK",
             "PERSISTENT_INDEXED_DB_RENDERER_WRITE_AND_CLOSE_OK",
             "PERSISTENT_CACHE_API_RENDERER_WRITE_AND_READBACK_OK",
+            "PERSISTENT_CACHE_API_SELECTED_BACKEND_CLOSE_AND_INDEX_REPLACED_OK",
             "PERSISTENT_INDEXED_DB_CONTEXT_CLOSED",
             "WasmProfileIndexedDBLifetimeParticipant",
             "kIndexedDBOperationTimeout",
@@ -1782,6 +1783,14 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             (
                 self.indexed_db_smoke,
                 "DidRendererCacheAPIWriteAndReadbackSucceed()",
+            ),
+            (
+                self.indexed_db_smoke,
+                "DidRendererCacheAPIBackendCloseAndIndexReplacementSucceed()",
+            ),
+            (
+                self.indexed_db_smoke,
+                "StartRendererCacheAPIBackendCloseAndIndexReplacement();",
             ),
             (self.indexed_db_smoke_header, "Cache Storage close, flush, durability"),
             (self.indexed_db_ui, "https://m7-cache-api-write-readback.test/"),
@@ -1872,6 +1881,16 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
                 'EmitMarker("PERSISTENT_CACHE_API_RENDERER_WRITE_AND_READBACK_OK");'
             ),
             self.shutdown_probe.index(
+                'EmitMarker(\n'
+                '        "PERSISTENT_CACHE_API_SELECTED_BACKEND_CLOSE_AND_INDEX_REPLACED_OK");'
+            ),
+        )
+        self.assertLess(
+            self.shutdown_probe.index(
+                'EmitMarker(\n'
+                '        "PERSISTENT_CACHE_API_SELECTED_BACKEND_CLOSE_AND_INDEX_REPLACED_OK");'
+            ),
+            self.shutdown_probe.index(
                 'EmitMarker("PERSISTENT_INDEXED_DB_CONTEXT_CLOSED");'
             ),
         )
@@ -1895,6 +1914,10 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         )
         self.assertIn(
             "bool cache_api_renderer_write_and_readback_acknowledged,",
+            self.shutdown_probe_header,
+        )
+        self.assertIn(
+            "bool cache_api_selected_backend_close_and_index_replacement_acknowledged);",
             self.shutdown_probe_header,
         )
         for token in (
@@ -1958,7 +1981,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "PolicyNotificationAfterResultCloseDoesNotUseClosedControl",
             "ShutdownAndReply(base::BindPostTask",
             "HasObserverForTesting",
-            "InitializeMojoCoreForIndexedDBControlWrapperTests",
+            "InitializeMojoCoreForWasmTests",
             "BindNewPipeAndPassRemote",
             "AddSessionOnly",
             "NotifyPolicyChanged",
@@ -2192,6 +2215,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "renderer_default_partition_config_reuse_witness",
             "indexed_db_renderer_write_and_close_acknowledged",
             "cache_api_renderer_write_and_readback_acknowledged",
+            "cache_api_selected_backend_close_and_index_replacement_acknowledged",
             "IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(",
         ):
             with self.subTest(selected_owner_predicate_token=token):

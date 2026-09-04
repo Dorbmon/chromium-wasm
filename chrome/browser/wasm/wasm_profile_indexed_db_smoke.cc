@@ -21,6 +21,7 @@
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
@@ -36,6 +37,7 @@
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/storage_partition_config.h"
+#include "content/public/browser/wasm_storage_partition_shutdown_test_support.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "crypto/hash.h"
@@ -73,6 +75,8 @@ constexpr base::TimeDelta kRendererCloseObservationRetryDelay =
     base::Milliseconds(20);
 
 constexpr char kRendererIndexedDBPageURL[] = "chrome://m7-indexed-db/";
+constexpr char kRendererCacheAPINamePrefix[] =
+    "m7-renderer-cache-api-write-readback-v1-";
 constexpr char16_t kRendererWriteTitle[] = u"m7-indexed-db-renderer-write-ok";
 constexpr char16_t kRendererWriteCacheAPIWriteReadbackTitle[] =
     u"m7-indexed-db-renderer-write-cache-api-write-readback-ok";
@@ -420,6 +424,10 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
     return require_cache_api_write_readback_ &&
            renderer_cache_api_write_and_readback_succeeded_;
   }
+  bool DidRendererCacheAPIBackendCloseAndIndexReplacementSucceed() const {
+    return require_cache_api_write_readback_ &&
+           renderer_cache_api_backend_close_and_index_replacement_succeeded_;
+  }
   bool HasOutstandingAdmission() const {
     return close_receipt_lifetime_.HasOutstandingAdmission();
   }
@@ -645,6 +653,10 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
       ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kProfile);
       return;
     }
+    if (require_cache_api_write_readback_) {
+      StartRendererCacheAPIBackendCloseAndIndexReplacement();
+      return;
+    }
     RequestSelectedBucketDetails();
   }
 
@@ -715,6 +727,51 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
     renderer_storage_partition_ = actual_partition;
     storage_key_ = actual_storage_key;
     return true;
+  }
+
+  void StartRendererCacheAPIBackendCloseAndIndexReplacement() {
+    if (!require_cache_api_write_readback_) {
+      RequestSelectedBucketDetails();
+      return;
+    }
+    if (failure_reported_ || !renderer_page_completed_ ||
+        !renderer_storage_partition_ || !storage_key_ ||
+        !renderer_web_contents_ ||
+        renderer_web_contents_->GetLastCommittedURL() != renderer_page_url_ ||
+        renderer_cache_api_backend_close_and_index_replacement_started_ ||
+        renderer_cache_api_backend_close_and_index_replacement_succeeded_) {
+      ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kClose);
+      return;
+    }
+
+    std::string cache_name_utf8(kRendererCacheAPINamePrefix);
+    cache_name_utf8.append(token_a_);
+    const std::u16string cache_name = base::UTF8ToUTF16(cache_name_utf8);
+    renderer_cache_api_backend_close_and_index_replacement_started_ = true;
+    if (!content::CloseWasmStoragePartitionLiveDefaultCacheAndWriteIndexForTest(
+            renderer_storage_partition_, *storage_key_, cache_name,
+            base::BindOnce(
+                &State::OnRendererCacheAPIBackendCloseAndIndexReplacement,
+                weak_ptr_factory_.GetWeakPtr()))) {
+      renderer_cache_api_backend_close_and_index_replacement_started_ = false;
+      ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kClose);
+    }
+  }
+
+  void OnRendererCacheAPIBackendCloseAndIndexReplacement(bool success) {
+    if (failure_reported_ ||
+        !renderer_cache_api_backend_close_and_index_replacement_started_ ||
+        renderer_cache_api_backend_close_and_index_replacement_succeeded_ ||
+        !success || !renderer_page_completed_ || !renderer_storage_partition_ ||
+        !storage_key_ || !renderer_web_contents_ ||
+        renderer_web_contents_->GetLastCommittedURL() != renderer_page_url_) {
+      ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kClose);
+      return;
+    }
+    renderer_cache_api_backend_close_and_index_replacement_succeeded_ = true;
+    EmitDigestMarker("CACHE_API_BACKEND_CLOSED_AND_INDEX_REPLACED",
+                     ActiveDigest());
+    RequestSelectedBucketDetails();
   }
 
   void RequestSelectedBucketDetails() {
@@ -823,6 +880,9 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
   bool renderer_page_completed_ = false;
   bool renderer_completion_check_scheduled_ = false;
   bool renderer_cache_api_write_and_readback_succeeded_ = false;
+  bool renderer_cache_api_backend_close_and_index_replacement_started_ = false;
+  bool renderer_cache_api_backend_close_and_index_replacement_succeeded_ =
+      false;
   SmokeMode mode_ = SmokeMode::kNone;
   bool emit_protocol_markers_ = true;
   bool require_cache_api_write_readback_ = false;
@@ -917,6 +977,12 @@ bool WasmProfileIndexedDBLifetimeParticipant::DidSucceed() const {
 bool WasmProfileIndexedDBLifetimeParticipant::
     DidRendererCacheAPIWriteAndReadbackSucceed() const {
   return state_ && state_->DidRendererCacheAPIWriteAndReadbackSucceed();
+}
+
+bool WasmProfileIndexedDBLifetimeParticipant::
+    DidRendererCacheAPIBackendCloseAndIndexReplacementSucceed() const {
+  return state_ &&
+         state_->DidRendererCacheAPIBackendCloseAndIndexReplacementSucceed();
 }
 
 void WasmProfileIndexedDBLifetimeParticipant::OnOperationRequiresQuarantine() {

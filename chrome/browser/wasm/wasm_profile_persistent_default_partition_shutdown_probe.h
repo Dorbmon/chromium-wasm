@@ -24,8 +24,9 @@ namespace chrome {
 // positive observations are one persistent default StoragePartition's direct
 // LocalStorage map-update/close receipt, a renderer IndexedDB
 // write/selected-bucket-close receipt plus one synthetic HTTPS Cache API
-// write/readback operation followed by that default partition's complete
-// IndexedDB context close receipt, CookieManager
+// write/readback operation and a separate native close/index-replacement
+// receipt for that exact live Cache API object, followed by that default
+// partition's complete IndexedDB context close receipt, CookieManager
 // write/flush/SQLite-row-readback/close receipts, and the later map-drop
 // boundary. It fails closed before the one initial default-partition config
 // derivation, then permits later nonallocating SiteInfo/frame-host config
@@ -95,8 +96,10 @@ bool IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(
 // IndexedDB bucket plus the exact default partition's complete IndexedDB
 // context close, and CookieManager's SQLite store. Before the IndexedDB close,
 // that same selected renderer must also make one synthetic HTTPS Cache API
-// write/readback. This separate operation acknowledgement is not a Cache
-// Storage close, flush, durability, or aggregate-owner receipt. The
+// write/readback and receive a separate native close/index-replacement receipt
+// for that exact live Cache API object. These Cache API acknowledgements are
+// not a Cache Storage-wide close, flush, durability, or aggregate-owner
+// receipt. The
 // LocalStorage result means only an
 // on-disk LevelDB map-update snapshot/commit result followed by exact
 // LocalStorage destruction and a database-sequence FIFO receipt; it is not an
@@ -120,7 +123,8 @@ bool IsWasmPersistentDefaultPartitionSelectedOwnerReceiptWitness(
     bool cookie_write_accepted,
     bool cookie_store_flush_acknowledged,
     bool cookie_sqlite_row_readback_succeeded,
-    bool cookie_store_close_acknowledged);
+    bool cookie_store_close_acknowledged,
+    bool cache_api_selected_backend_close_and_index_replacement_acknowledged);
 
 bool HasWasmPersistentDefaultPartitionShutdownProbeArguments();
 bool EnableWasmPersistentDefaultPartitionShutdownProbe();
@@ -152,8 +156,10 @@ TakeWasmPersistentDefaultPartitionShutdownProbeRendererConfigForSite(
 // receipt. It then creates one unassigned renderer SiteInstance and performs
 // one renderer IndexedDB write and selected-bucket close receipt in that same
 // default partition. Before that close, the renderer also performs one Cache
-// API synthetic-HTTPS put/match readback in the exact same partition; this
-// remains an operation observation, not a Cache Storage close/flush claim.
+// API synthetic-HTTPS put/match readback in the exact same partition and the
+// browser then closes that exact live cache backend and replaces its
+// CacheStorage index. These are separate narrow observations, not a
+// CacheStorage-wide close/flush claim.
 // The probe then waits for that partition's IndexedDBContextImpl close
 // completion after every live bucket seals factory ingress and completes
 // destruction. The renderer witness checks the captured config, actual

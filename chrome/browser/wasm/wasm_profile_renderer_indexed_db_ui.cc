@@ -246,6 +246,10 @@ constexpr char kRendererIndexedDBScript[] = R"JS((() => {
     } catch (_error) {
       throw "cache-api-open-error";
     }
+    // Keep the browser-side CacheStorageCacheHandle live until the browser
+    // participant observes the native backend close/index-replacement receipt.
+    // The page performs no Cache API calls after publishing its title.
+    globalThis.__m7RendererCacheApiWriteReadbackCache = cache;
     try {
       await cache.put(request, new Response(token));
     } catch (_error) {

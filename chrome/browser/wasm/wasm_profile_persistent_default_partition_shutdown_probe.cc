@@ -454,6 +454,8 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
         !indexed_db_participant_->DidSucceed() ||
         !indexed_db_participant_->
             DidRendererCacheAPIWriteAndReadbackSucceed() ||
+        !indexed_db_participant_->
+            DidRendererCacheAPIBackendCloseAndIndexReplacementSucceed() ||
         !browser_context_ ||
         !partition_ || !renderer_default_partition_config_reuse_witness_ ||
         !IsCapturedDefaultPartitionStillSoleLoaded()) {
@@ -464,9 +466,13 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
     indexed_db_receipt_completed_ = true;
     indexed_db_renderer_write_and_close_acknowledged_ = true;
     cache_api_renderer_write_and_readback_acknowledged_ = true;
+    cache_api_selected_backend_close_and_index_replacement_acknowledged_ =
+        true;
     indexed_db_participant_.reset();
     EmitMarker("PERSISTENT_INDEXED_DB_RENDERER_WRITE_AND_CLOSE_OK");
     EmitMarker("PERSISTENT_CACHE_API_RENDERER_WRITE_AND_READBACK_OK");
+    EmitMarker(
+        "PERSISTENT_CACHE_API_SELECTED_BACKEND_CLOSE_AND_INDEX_REPLACED_OK");
     StartIndexedDBContextShutdownReceipt();
   }
 
@@ -484,6 +490,7 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
         !indexed_db_receipt_completed_ ||
         !indexed_db_renderer_write_and_close_acknowledged_ ||
         !cache_api_renderer_write_and_readback_acknowledged_ ||
+        !cache_api_selected_backend_close_and_index_replacement_acknowledged_ ||
         indexed_db_context_shutdown_started_ ||
         indexed_db_context_shutdown_acknowledged_ ||
         indexed_db_context_shutdown_profile_io_hold_ ||
@@ -598,6 +605,7 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
         !indexed_db_receipt_completed_ ||
         !indexed_db_renderer_write_and_close_acknowledged_ ||
         !cache_api_renderer_write_and_readback_acknowledged_ ||
+        !cache_api_selected_backend_close_and_index_replacement_acknowledged_ ||
         !indexed_db_context_shutdown_acknowledged_ ||
         cookie_phase_started_ || !owner_receipts_completion_) {
       ReportFailure(
@@ -887,7 +895,8 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
         indexed_db_context_shutdown_acknowledged_,
         cookie_write_accepted_, cookie_store_flush_acknowledged_,
         cookie_sqlite_row_readback_succeeded_,
-        cookie_store_close_acknowledged_);
+        cookie_store_close_acknowledged_,
+        cache_api_selected_backend_close_and_index_replacement_acknowledged_);
   }
 
   bool BeginCookieOperation() {
@@ -1177,6 +1186,8 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
   bool indexed_db_receipt_completed_ = false;
   bool indexed_db_renderer_write_and_close_acknowledged_ = false;
   bool cache_api_renderer_write_and_readback_acknowledged_ = false;
+  bool cache_api_selected_backend_close_and_index_replacement_acknowledged_ =
+      false;
   bool indexed_db_context_shutdown_started_ = false;
   bool indexed_db_context_shutdown_acknowledged_ = false;
   bool cookie_phase_started_ = false;
@@ -1273,12 +1284,14 @@ bool IsWasmPersistentDefaultPartitionSelectedOwnerReceiptWitness(
     bool cookie_write_accepted,
     bool cookie_store_flush_acknowledged,
     bool cookie_sqlite_row_readback_succeeded,
-    bool cookie_store_close_acknowledged) {
+    bool cookie_store_close_acknowledged,
+    bool cache_api_selected_backend_close_and_index_replacement_acknowledged) {
   return local_storage_receipt_started &&
          local_storage_on_disk_commit_and_close_acknowledged &&
          renderer_default_partition_config_reuse_witness &&
          indexed_db_renderer_write_and_close_acknowledged &&
          cache_api_renderer_write_and_readback_acknowledged &&
+         cache_api_selected_backend_close_and_index_replacement_acknowledged &&
          indexed_db_context_shutdown_acknowledged &&
          IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(
              cookie_write_accepted, cookie_store_flush_acknowledged,

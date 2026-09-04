@@ -72,6 +72,7 @@ def passing_result(
         "persistentDefaultPartitionRendererConfigReuseWitnessProven": True,
         "persistentDefaultPartitionIndexedDBRendererWriteAndCloseReceiptProven": True,
         "persistentDefaultPartitionCacheAPIWriteAndReadbackReceiptProven": True,
+        "persistentDefaultPartitionCacheAPISelectedBackendCloseAndIndexReplacementReceiptProven": True,
         "persistentDefaultPartitionIndexedDBContextCloseReceiptProven": True,
         "persistentDefaultPartitionCookieWriteAcceptedProven": True,
         "persistentDefaultPartitionCookieStoreFlushAcknowledgedProven": True,
@@ -224,6 +225,8 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
                 smoke.M7_SHUTDOWN_MARKER_PREFIX
                 + "PERSISTENT_CACHE_API_RENDERER_WRITE_AND_READBACK_OK",
                 smoke.M7_SHUTDOWN_MARKER_PREFIX
+                + "PERSISTENT_CACHE_API_SELECTED_BACKEND_CLOSE_AND_INDEX_REPLACED_OK",
+                smoke.M7_SHUTDOWN_MARKER_PREFIX
                 + "PERSISTENT_INDEXED_DB_CONTEXT_CLOSED",
                 smoke.M7_SHUTDOWN_MARKER_PREFIX
                 + "PERSISTENT_COOKIE_WRITE_ACCEPTED",
@@ -276,6 +279,7 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
             "persistentDefaultPartitionRendererConfigReuseWitnessProven",
             "persistentDefaultPartitionIndexedDBRendererWriteAndCloseReceiptProven",
             "persistentDefaultPartitionCacheAPIWriteAndReadbackReceiptProven",
+            "persistentDefaultPartitionCacheAPISelectedBackendCloseAndIndexReplacementReceiptProven",
             "persistentDefaultPartitionIndexedDBContextCloseReceiptProven",
             "persistentDefaultPartitionCookieWriteAcceptedProven",
             "persistentDefaultPartitionCookieStoreFlushAcknowledgedProven",
@@ -333,10 +337,20 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
         assert isinstance(run, dict)
         markers = run["markers"]
         assert isinstance(markers, list)
-        markers.pop(5)
+        markers.pop(6)
         run["markerCount"] = len(markers)
         with self.assertRaises(M0Error):
             validate(missing_indexed_db_context_marker)
+
+        missing_cache_api_backend_close_marker = passing_result()
+        run = missing_cache_api_backend_close_marker["run"]
+        assert isinstance(run, dict)
+        markers = run["markers"]
+        assert isinstance(markers, list)
+        markers.pop(5)
+        run["markerCount"] = len(markers)
+        with self.assertRaises(M0Error):
+            validate(missing_cache_api_backend_close_marker)
 
         missing_cache_api_marker = passing_result()
         run = missing_cache_api_marker["run"]
