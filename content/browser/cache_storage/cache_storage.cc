@@ -924,6 +924,108 @@ void CacheStorage::Size(CacheStorage::SizeCallback callback) {
           scheduler_->WrapCallbackToRunNext(id, std::move(callback))));
 }
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+void CacheStorage::CloseNamedCacheAndWriteIndexForWasmTest(
+    const std::u16string& cache_name,
+    base::OnceCallback<void(bool)> callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  // Do not initialize CacheStorage or load a cache just to manufacture a
+  // disk-backed close-and-index-replacement receipt.
+  if (memory_only_ || !initialized_ || !cache_index_) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  auto cache_map_it = cache_map_.find(cache_name);
+  if (cache_map_it == cache_map_.end() || !cache_map_it->second) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  // Keep both the parent storage and the exact already-live cache alive while
+  // the parent exclusive operation waits and its child close completes.
+  CacheStorageHandle storage_handle = CreateHandle();
+  CacheStorageCacheHandle cache_handle = cache_map_it->second->CreateHandle();
+
+  auto id = scheduler_->CreateId();
+  scheduler_->ScheduleOperation(
+      id, CacheStorageSchedulerMode::kExclusive,
+      CacheStorageSchedulerOp::kWriteIndex,
+      CacheStorageSchedulerPriority::kNormal,
+      base::BindOnce(
+          &CacheStorage::CloseNamedCacheAndWriteIndexForWasmTestImpl,
+          weak_factory_.GetWeakPtr(), cache_name, std::move(storage_handle),
+          std::move(cache_handle),
+          scheduler_->WrapCallbackToRunNext(id, std::move(callback))));
+}
+
+void CacheStorage::CloseNamedCacheAndWriteIndexForWasmTestImpl(
+    const std::u16string& cache_name,
+    CacheStorageHandle storage_handle,
+    CacheStorageCacheHandle cache_handle,
+    base::OnceCallback<void(bool)> callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(scheduler_->IsRunningExclusiveOperation());
+
+  CacheStorageCache* cache = CacheStorageCache::From(cache_handle);
+  auto cache_map_it = cache_map_.find(cache_name);
+  // The map can change while this operation waits. Require that it still
+  // contains the exact cache selected at admission, rather than loading a
+  // replacement cache.
+  if (memory_only_ || !initialized_ || !cache_index_ || !cache_loader_ ||
+      !cache || cache_map_it == cache_map_.end() ||
+      cache_map_it->second.get() != cache) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  cache->CloseAndReportResultForWasmTest(base::BindOnce(
+      &CacheStorage::CloseNamedCacheAndWriteIndexForWasmTestDidClose,
+      weak_factory_.GetWeakPtr(), std::move(storage_handle),
+      std::move(cache_handle), std::move(callback)));
+}
+
+void CacheStorage::CloseNamedCacheAndWriteIndexForWasmTestDidClose(
+    CacheStorageHandle storage_handle,
+    CacheStorageCacheHandle cache_handle,
+    base::OnceCallback<void(bool)> callback,
+    bool cache_close_succeeded) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(scheduler_->IsRunningExclusiveOperation());
+
+  if (!cache_close_succeeded || !cache_index_ || !cache_loader_) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  // Calling WriteIndex() here would enqueue a second exclusive parent
+  // operation behind this one. Write directly like the existing create/delete
+  // paths so the outer scheduler operation can complete after this callback.
+  index_write_task_.Cancel();
+  cache_loader_->WriteIndex(
+      *cache_index_,
+      base::BindOnce(
+          &CacheStorage::CloseNamedCacheAndWriteIndexForWasmTestDidWriteIndex,
+          weak_factory_.GetWeakPtr(), std::move(storage_handle),
+          std::move(cache_handle), std::move(callback)));
+}
+
+void CacheStorage::CloseNamedCacheAndWriteIndexForWasmTestDidWriteIndex(
+    CacheStorageHandle storage_handle,
+    CacheStorageCacheHandle cache_handle,
+    base::OnceCallback<void(bool)> callback,
+    bool index_write_succeeded) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(scheduler_->IsRunningExclusiveOperation());
+  // Keep the parent and exact cache alive until the terminal scheduler
+  // callback runs.
+  static_cast<void>(storage_handle);
+  static_cast<void>(cache_handle);
+  std::move(callback).Run(index_write_succeeded);
+}
+#endif
+
 void CacheStorage::ResetManager() {
   cache_storage_manager_ = nullptr;
 }

@@ -215,6 +215,7 @@ source_set("unit_tests") {
 
   if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
     configs += [ ":wasm_m7_persistent_default_partition_shutdown_probe" ]
+    deps += [ "//content/test:wasm_mojo_core_test_support" ]
     sources += [ "indexed_db_control_wrapper_unittest.cc" ]
   }
 }

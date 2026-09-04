@@ -72,6 +72,19 @@ static_library("setup_field_trials") {
 }
 
 if (is_wasm) {
+  # The Wasm Mojo embedder permits exactly one Init() per test binary. Keep
+  # that initialization in one object shared by all Wasm test fixtures.
+  source_set("wasm_mojo_core_test_support") {
+    testonly = true
+
+    sources = [
+      "wasm_mojo_core_test_support.cc",
+      "wasm_mojo_core_test_support.h",
+    ]
+
+    deps = [ "//mojo/core/embedder" ]
+  }
+
   # BrowserTaskEnvironment needs Content-private browser test infrastructure.
   # Keep its small Wasm-only use in //content/test, where :for_content_tests
   # deliberately grants that access, instead of copying the source into a
@@ -133,7 +146,10 @@ if (is_wasm) {
     source_set("wasm_cache_storage_close_receipt_unittests") {
       testonly = true
 
-      sources = [ "../browser/cache_storage/cache_storage_cache_unittest.cc" ]
+      sources = [
+        "../browser/cache_storage/cache_storage_cache_unittest.cc",
+        "../browser/cache_storage/cache_storage_manager_unittest.cc",
+      ]
 
       configs += [
         ":wasm_m7_cache_storage_close_receipt",
@@ -145,15 +161,16 @@ if (is_wasm) {
       deps = [
         ":wasm_cache_storage_close_receipt_test_support",
         ":wasm_browser_task_environment_test_support",
+        ":wasm_mojo_core_test_support",
         "//base",
         "//base/test:test_support",
         "//components/services/storage",
         "//components/services/storage/public/cpp",
         "//components/services/storage/public/mojom",
+        "//content/browser/cache_storage:cache_storage_proto",
         "//content/browser:for_content_tests",
         "//content/public/browser",
         "//crypto",
-        "//mojo/core/embedder",
         "//mojo/public/cpp/bindings",
         "//net",
         "//net:test_support",

@@ -51,7 +51,6 @@
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_browser_context.h"
 #include "content/public/test/test_utils.h"
-#include "mojo/core/embedder/embedder.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "mojo/public/cpp/system/data_pipe.h"
@@ -71,6 +70,10 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom.h"
 #include "url/origin.h"
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+#include "content/test/wasm_mojo_core_test_support.h"
+#endif
 
 using blink::FetchAPIRequestHeadersMap;
 using blink::mojom::CacheStorageError;
@@ -94,14 +97,6 @@ void SizeCallback(base::RunLoop* run_loop,
 }
 
 #if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
-void InitializeMojoCoreForCacheStorageCacheWasmTests() {
-  static const bool initialized = [] {
-    mojo::core::Init();
-    return true;
-  }();
-  static_cast<void>(initialized);
-}
-
 void BoolCallback(base::RunLoop* run_loop,
                   bool* callback_called,
                   bool* out_result,
@@ -566,7 +561,7 @@ class CacheStorageCacheTest : public testing::Test {
 
   void SetUp() override {
 #if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
-    InitializeMojoCoreForCacheStorageCacheWasmTests();
+    content::test::InitializeMojoCoreForWasmTests();
 #endif
     ChromeBlobStorageContext* blob_storage_context =
         ChromeBlobStorageContext::GetFor(&browser_context_);

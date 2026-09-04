@@ -2659,6 +2659,7 @@ if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
       "//content/browser/indexed_db",
       "//content/browser/indexed_db:wasm_m7_persistent_default_partition_shutdown_receipt_unittests",
       "//content/test:wasm_cache_storage_close_receipt_unittests",
+      "//content/test:wasm_mojo_core_test_support",
       "//mojo/core/embedder",
       "//mojo/public/cpp/bindings",
       "//storage/browser:test_support",

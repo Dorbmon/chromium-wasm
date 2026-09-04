@@ -14,7 +14,6 @@
 #include "components/services/storage/privileged/cpp/bucket_client_info.h"
 #include "components/services/storage/privileged/mojom/indexed_db_client_state_checker.mojom.h"
 #include "components/services/storage/public/cpp/buckets/bucket_locator.h"
-#include "mojo/core/embedder/embedder.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "storage/browser/test/mock_quota_manager.h"
@@ -24,16 +23,10 @@
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 
 #if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+#include "content/test/wasm_mojo_core_test_support.h"
+
 namespace content::indexed_db {
 namespace {
-
-void InitializeMojoCoreForIndexedDBControlWrapperTests() {
-  static const bool initialized = [] {
-    mojo::core::Init();
-    return true;
-  }();
-  static_cast<void>(initialized);
-}
 
 class TestIndexedDBClientStateChecker final
     : public storage::mojom::IndexedDBClientStateChecker {
@@ -65,7 +58,7 @@ class TestSpecialStoragePolicy final
 TEST(IndexedDBControlWrapperTest,
      PolicyNotificationAfterResultCloseDoesNotUseClosedControl) {
   base::test::TaskEnvironment task_environment;
-  InitializeMojoCoreForIndexedDBControlWrapperTests();
+  content::test::InitializeMojoCoreForWasmTests();
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
 

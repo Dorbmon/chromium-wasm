@@ -79,6 +79,10 @@
 #include "url/gurl.h"
 #include "url/origin.h"
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+#include "content/test/wasm_mojo_core_test_support.h"
+#endif
+
 using blink::mojom::CacheStorageError;
 using blink::mojom::CacheStorageVerboseErrorPtr;
 using network::mojom::FetchResponseType;
@@ -275,6 +279,9 @@ class CacheStorageManagerTest : public testing::Test {
   CacheStorageManagerTest& operator=(const CacheStorageManagerTest&) = delete;
 
   void SetUp() override {
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+    content::test::InitializeMojoCoreForWasmTests();
+#endif
     base::FilePath temp_dir_path;
     if (!MemoryOnly()) {
       ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
@@ -429,6 +436,47 @@ class CacheStorageManagerTest : public testing::Test {
     DCHECK(callback_bool_);
     return write_was_scheduled;
   }
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  bool CloseNamedCacheAndWriteIndexForWasmTest(
+      const storage::BucketLocator& bucket_locator,
+      const std::u16string& cache_name) {
+    CacheStorageHandle cache_storage = CacheStorageForBucket(bucket_locator);
+    base::test::TestFuture<bool> result;
+    CacheStorage::From(cache_storage)->CloseNamedCacheAndWriteIndexForWasmTest(
+        cache_name, result.GetCallback());
+    return result.Get();
+  }
+
+  bool CacheStorageIsInitializedForWasmTest(
+      const storage::BucketLocator& bucket_locator) {
+    CacheStorageHandle cache_storage = CacheStorageForBucket(bucket_locator);
+    return CacheStorage::From(cache_storage)->initialized_;
+  }
+
+  bool HasLiveCacheForWasmTest(const storage::BucketLocator& bucket_locator,
+                               const std::u16string& cache_name) {
+    CacheStorageHandle cache_storage = CacheStorageForBucket(bucket_locator);
+    CacheStorage* cache_storage_impl = CacheStorage::From(cache_storage);
+    auto cache_map_it = cache_storage_impl->cache_map_.find(cache_name);
+    return cache_map_it != cache_storage_impl->cache_map_.end() &&
+           cache_map_it->second;
+  }
+
+  bool IndexWritePendingForWasmTest(
+      const storage::BucketLocator& bucket_locator) {
+    CacheStorageHandle cache_storage = CacheStorageForBucket(bucket_locator);
+    return CacheStorage::From(cache_storage)->index_write_pending();
+  }
+
+  base::FilePath IndexPathForWasmTest(
+      const storage::BucketLocator& bucket_locator) {
+    CacheStorageHandle cache_storage = CacheStorageForBucket(bucket_locator);
+    CacheStorage* cache_storage_impl = CacheStorage::From(cache_storage);
+    return cache_storage_impl->directory_path_.AppendASCII(
+        CacheStorage::kIndexFileName);
+  }
+#endif
 
   void DestroyStorageManager() {
     callback_cache_handle_ = CacheStorageCacheHandle();
@@ -2545,6 +2593,72 @@ TEST_F(CacheStorageManagerTest, WriteIndexOnlyScheduledWhenValueChanges) {
   EXPECT_TRUE(CacheMatch(callback_cache_handle_.value(), kResource));
   EXPECT_FALSE(FlushCacheStorageIndex(bucket_locator1_));
 }
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+TEST_F(CacheStorageManagerTest,
+       CloseNamedCacheAndWriteIndexForWasmTestReplacesDiskIndex) {
+  constexpr char16_t kCacheName[] = u"wasm-close-and-write-index";
+  constexpr char kSentinel[] = "wasm cache storage index sentinel";
+
+  ASSERT_TRUE(Open(bucket_locator1_, kCacheName));
+  ASSERT_TRUE(callback_cache_handle_.value());
+  ASSERT_TRUE(CachePut(callback_cache_handle_.value(),
+                       GURL("https://example.com/wasm-cache-entry")));
+  ASSERT_TRUE(IndexWritePendingForWasmTest(bucket_locator1_));
+
+  const base::FilePath index_path = IndexPathForWasmTest(bucket_locator1_);
+  ASSERT_TRUE(base::WriteFile(index_path, kSentinel));
+
+  EXPECT_TRUE(
+      CloseNamedCacheAndWriteIndexForWasmTest(bucket_locator1_, kCacheName));
+  EXPECT_FALSE(IndexWritePendingForWasmTest(bucket_locator1_));
+
+  std::string serialized_index;
+  ASSERT_TRUE(base::ReadFileToString(index_path, &serialized_index));
+  EXPECT_NE(kSentinel, serialized_index);
+
+  proto::CacheStorageIndex parsed_index;
+  ASSERT_TRUE(parsed_index.ParseFromString(serialized_index));
+  ASSERT_EQ(1, parsed_index.cache_size());
+  EXPECT_EQ(base::UTF16ToUTF8(kCacheName), parsed_index.cache(0).name());
+
+  // The result-bearing direct replacement consumed the delayed index write.
+  EXPECT_FALSE(FlushCacheStorageIndex(bucket_locator1_));
+
+  // A closed child cache cannot manufacture a second close/index receipt.
+  EXPECT_FALSE(
+      CloseNamedCacheAndWriteIndexForWasmTest(bucket_locator1_, kCacheName));
+}
+
+TEST_F(CacheStorageManagerTest,
+       CloseNamedCacheAndWriteIndexForWasmTestDoesNotInitializeOrLoad) {
+  constexpr char16_t kLiveCacheName[] = u"wasm-already-live";
+  constexpr char16_t kMissingCacheName[] = u"wasm-missing";
+
+  EXPECT_FALSE(CacheStorageIsInitializedForWasmTest(bucket_locator1_));
+  EXPECT_FALSE(CloseNamedCacheAndWriteIndexForWasmTest(bucket_locator1_,
+                                                        kMissingCacheName));
+  EXPECT_FALSE(CacheStorageIsInitializedForWasmTest(bucket_locator1_));
+  EXPECT_FALSE(HasLiveCacheForWasmTest(bucket_locator1_, kMissingCacheName));
+
+  ASSERT_TRUE(Open(bucket_locator1_, kLiveCacheName));
+  EXPECT_TRUE(HasLiveCacheForWasmTest(bucket_locator1_, kLiveCacheName));
+  EXPECT_FALSE(CloseNamedCacheAndWriteIndexForWasmTest(bucket_locator1_,
+                                                        kMissingCacheName));
+  EXPECT_FALSE(HasLiveCacheForWasmTest(bucket_locator1_, kMissingCacheName));
+}
+
+TEST_F(CacheStorageManagerMemoryOnlyTest,
+       CloseNamedCacheAndWriteIndexForWasmTestRejectsMemoryStorage) {
+  constexpr char16_t kCacheName[] = u"wasm-memory-close";
+
+  ASSERT_TRUE(Open(bucket_locator1_, kCacheName));
+  ASSERT_TRUE(CachePut(callback_cache_handle_.value(),
+                       GURL("https://example.com/wasm-memory-entry")));
+  EXPECT_FALSE(
+      CloseNamedCacheAndWriteIndexForWasmTest(bucket_locator1_, kCacheName));
+}
+#endif
 
 TEST_P(CacheStorageManagerTestP, SlowPutCompletesWithoutExternalRef) {
   EXPECT_TRUE(Open(bucket_locator1_, u"foo"));

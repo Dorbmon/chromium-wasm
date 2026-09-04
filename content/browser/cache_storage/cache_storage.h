@@ -173,6 +173,21 @@ class CONTENT_EXPORT CacheStorage : public CacheStorageCacheObserver {
   // an estimate only since the cache may be modified at any time.
   void Size(SizeCallback callback);
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // Closes one already-live disk-backed Cache API cache, then replaces its
+  // CacheStorage index for the source-selected Wasm profile storage probe.
+  // The callback receives true only after both the cache backend deletion
+  // completion callback and the index replacement callback run. It receives
+  // false without initializing CacheStorage or loading a cache when this is
+  // not an initialized disk-backed storage with an already-live named cache.
+  //
+  // This does not establish CacheStorage-wide quiescence, an index flush or
+  // fsync, or profile durability.
+  void CloseNamedCacheAndWriteIndexForWasmTest(
+      const std::u16string& cache_name,
+      base::OnceCallback<void(bool)> callback);
+#endif
+
   // The functions below are for tests to verify that the operations run
   // serially.
   CacheStorageSchedulerId StartAsyncOperationForTesting();
@@ -311,6 +326,24 @@ class CONTENT_EXPORT CacheStorage : public CacheStorageCacheObserver {
                               base::OnceClosure closure,
                               int64_t* accumulator,
                               int64_t size);
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  void CloseNamedCacheAndWriteIndexForWasmTestImpl(
+      const std::u16string& cache_name,
+      CacheStorageHandle storage_handle,
+      CacheStorageCacheHandle cache_handle,
+      base::OnceCallback<void(bool)> callback);
+  void CloseNamedCacheAndWriteIndexForWasmTestDidClose(
+      CacheStorageHandle storage_handle,
+      CacheStorageCacheHandle cache_handle,
+      base::OnceCallback<void(bool)> callback,
+      bool cache_close_succeeded);
+  void CloseNamedCacheAndWriteIndexForWasmTestDidWriteIndex(
+      CacheStorageHandle storage_handle,
+      CacheStorageCacheHandle cache_handle,
+      base::OnceCallback<void(bool)> callback,
+      bool index_write_succeeded);
+#endif
 
   void NotifyCacheContentChanged(const std::u16string& cache_name);
 
