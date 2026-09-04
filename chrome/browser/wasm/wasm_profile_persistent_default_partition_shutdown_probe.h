@@ -23,7 +23,8 @@ namespace chrome {
 // Fixed failure grammar for the source-selected shutdown probe. Its narrow
 // positive observations are one persistent default StoragePartition's direct
 // LocalStorage map-update/close receipt, a renderer IndexedDB
-// write/selected-bucket-close receipt, CookieManager
+// write/selected-bucket-close receipt followed by that default partition's
+// complete IndexedDB context close receipt, CookieManager
 // write/flush/SQLite-row-readback/close receipts, and the later map-drop
 // boundary. It fails closed before the one initial default-partition config
 // derivation, then permits later nonallocating SiteInfo/frame-host config
@@ -89,21 +90,26 @@ bool IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(
 
 // This probe has receipts for exactly three selected persistent owners: the
 // LocalStorage LevelDB close-fence participant, one renderer-created IndexedDB
-// bucket, and CookieManager's SQLite store. The LocalStorage result means only
-// an on-disk LevelDB map-update snapshot/commit result followed by exact
+// bucket plus the exact default partition's complete IndexedDB context close,
+// and CookieManager's SQLite store. The LocalStorage result means only an
+// on-disk LevelDB map-update snapshot/commit result followed by exact
 // LocalStorage destruction and a database-sequence FIFO receipt; it is not an
-// fsync or physical-crash durability result. The IndexedDB result is only the
-// renderer-selected bucket's ForceClose callback after the renderer closed its
-// database. Its receipt also requires captured-config reuse, the committed
-// renderer frame's exact default-partition identity, and sole-map/no-create
-// checks at the renderer handoff boundaries. Their conjunction deliberately
-// does not classify an aggregate StoragePartition close, a durable profile
-// flush, or profile persistence.
+// fsync or physical-crash durability result. The IndexedDB result first
+// requires the renderer-selected bucket's ForceClose callback after the
+// renderer closed its database, then requires every live bucket in that one
+// context to seal factory ingress, reset its backing store, and complete
+// destruction before the IndexedDBContextImpl is destroyed. It also requires
+// captured-config reuse, the committed renderer frame's exact
+// default-partition identity, and sole-map/no-create checks at the renderer
+// handoff boundaries. Their conjunction deliberately does not classify an
+// aggregate StoragePartition close, a durable profile flush, or profile
+// persistence.
 bool IsWasmPersistentDefaultPartitionSelectedOwnerReceiptWitness(
     bool local_storage_receipt_started,
     bool local_storage_on_disk_commit_and_close_acknowledged,
     bool renderer_default_partition_config_reuse_witness,
     bool indexed_db_renderer_write_and_close_acknowledged,
+    bool indexed_db_context_shutdown_acknowledged,
     bool cookie_write_accepted,
     bool cookie_store_flush_acknowledged,
     bool cookie_sqlite_row_readback_succeeded,
@@ -138,10 +144,13 @@ TakeWasmPersistentDefaultPartitionShutdownProbeRendererConfigForSite(
 // result and the same LocalStorage instance's database-sequence FIFO close
 // receipt. It then creates one unassigned renderer SiteInstance and performs
 // one renderer IndexedDB write and selected-bucket close receipt in that same
-// default partition. The renderer witness checks the captured config, actual
+// default partition, then waits for that partition's IndexedDBContextImpl
+// close completion after every live bucket seals factory ingress and completes
+// destruction. The renderer witness checks the captured config, actual
 // committed frame partition pointer/config/profile path, and sole
 // partition-map no-create lookups before and after the selected close. It then
-// writes one persistent test cookie through the partition's cloned
+// writes one persistent test cookie
+// through the partition's cloned
 // CookieManager, awaits the backing-store flush acknowledgement, performs a
 // network-owned matching SQLite logical-row readback, and receives the
 // test-only cookie-store close completion receipt before invoking

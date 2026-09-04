@@ -32,6 +32,16 @@ DidWasmStoragePartitionShutdownNotificationForTest();
 // receipt false and prevents a stale non-owning partition pointer from
 // surviving an abnormal teardown path.
 CONTENT_EXPORT void CancelWasmStoragePartitionShutdownNotificationForTest();
+
+// Starts a result-bearing close of the exact partition's IndexedDB context.
+// |on_closed| runs on the caller's sequence only after the helper has posted
+// the IndexedDB-sequence completion back to it. The receipt covers all live
+// buckets in that one context after their factory ingress is sealed and their
+// destruction has completed; it does not cover LocalStorage, Cookies, or
+// aggregate StoragePartition shutdown.
+CONTENT_EXPORT bool ShutdownWasmStoragePartitionIndexedDBForTest(
+    StoragePartition* partition,
+    base::OnceClosure on_closed);
 #endif
 
 }  // namespace content

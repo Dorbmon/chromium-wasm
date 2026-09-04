@@ -671,8 +671,9 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   // This artifact admits exactly one real default StoragePartition after the
   // V4 Default mount and profile construction. It owns no ordinary Browser or
   // service graph, but creates one source-selected renderer WebUI document to
-  // collect a selected IndexedDB close receipt. It starts profile teardown
-  // only after direct LocalStorage, renderer IndexedDB, and persistent
+  // collect a selected IndexedDB close receipt, then closes that exact
+  // partition's complete IndexedDB context. It starts profile teardown only
+  // after direct LocalStorage, renderer IndexedDB/context, and persistent
   // CookieManager selected-owner receipts; it then always retires the backend
   // fail-closed after the map-drop boundary.
   if (!chrome::IsWasmPersistentDefaultPartitionShutdownProbeEnabled()) {
@@ -1419,8 +1420,8 @@ void WasmBrowserMainParts::
     OnWasmPersistentDefaultPartitionShutdownProbeSelectedOwnerReceiptsClosed(
         bool success) {
   if (!success) {
-    LOG(ERROR) << "chrome_wasm persistent default LocalStorage/IndexedDB/"
-                  "Cookie selected-owner receipt failed";
+    LOG(ERROR) << "chrome_wasm persistent default LocalStorage/IndexedDB-"
+                  "context/Cookie selected-owner receipt failed";
   }
   // The probe posts this handoff after all selected owner callbacks have
   // returned. From this point ordinary profile teardown can observe the real
@@ -2435,10 +2436,11 @@ void WasmBrowserMainParts::FinishShutdown() {
     // Seal the real BrowserContext map before any shutdown notification can
     // run a late partition accessor. The probe has already received direct
     // LocalStorage map-update/close, renderer IndexedDB selected-bucket-close,
-    // and CookieManager SQLite-row-readback/close receipts, and retains its
-    // explicit admission from construction through the later synchronous
-    // map-drop boundary. A later re-entry sees the already-pending/completed
-    // fence and does not duplicate either one-shot observation.
+    // complete default-context close, and CookieManager SQLite-row-readback/
+    // close receipts, and retains its explicit admission from construction
+    // through the later synchronous map-drop boundary. A later re-entry sees
+    // the already-pending/completed fence and does not duplicate either
+    // one-shot observation.
     if (!profile_->IsPrefsShutdownFencePending() &&
         !profile_->HasPrefsShutdownFenceCompleted()) {
       chrome::NotifyWasmPersistentDefaultPartitionShutdownProbeCreationSealed(

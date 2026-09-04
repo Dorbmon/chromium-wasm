@@ -207,6 +207,12 @@ class CONTENT_EXPORT StoragePartitionImpl
   // an interface accessible in //content/public/.
   SharedStorageRuntimeManager* GetSharedStorageRuntimeManager();  // override;
   storage::mojom::IndexedDBControl& GetIndexedDBControl() override;
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // Starts the selected source-set's result-bearing IndexedDB context close.
+  // This is intentionally narrower than StoragePartition shutdown and exists
+  // only for the Wasm persistent-default-partition shutdown probe.
+  bool ShutdownIndexedDBForWasmTest(base::OnceClosure completion);
+#endif
   FileSystemAccessEntryFactory* GetFileSystemAccessEntryFactory() override;
   storage::mojom::CacheStorageControl* GetCacheStorageControl() override;
   ServiceWorkerContextWrapper* GetServiceWorkerContext() override;

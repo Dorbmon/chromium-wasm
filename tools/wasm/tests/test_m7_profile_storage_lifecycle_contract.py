@@ -101,6 +101,59 @@ def _assert_only_in_m7_storage_blocks(
             )
 
 
+def _positive_macro_branch_blocks(text: str, macro: str) -> list[tuple[int, int]]:
+    """Returns the true branches of exact ``#if defined(MACRO)`` guards."""
+
+    blocks = []
+    frames: list[dict[str, int | bool]] = []
+    directive_re = re.compile(r"#\s*(if|ifdef|ifndef|elif|else|endif)\b")
+    exact_positive_re = re.compile(
+        rf"#\s*if\s+defined\({re.escape(macro)}\)\s*(?://.*)?$"
+    )
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        directive = line.lstrip()
+        match = directive_re.match(directive)
+        if match:
+            kind = match.group(1)
+            if kind in ("if", "ifdef", "ifndef"):
+                frames.append(
+                    {
+                        "exact_positive": bool(exact_positive_re.match(directive)),
+                        "true_branch_active": bool(
+                            exact_positive_re.match(directive)
+                        ),
+                        "branch_start": offset + len(line),
+                    }
+                )
+            elif kind in ("elif", "else") and frames:
+                frame = frames[-1]
+                if frame["exact_positive"] and frame["true_branch_active"]:
+                    blocks.append((int(frame["branch_start"]), offset))
+                frame["true_branch_active"] = False
+            elif kind == "endif" and frames:
+                frame = frames.pop()
+                if frame["exact_positive"] and frame["true_branch_active"]:
+                    blocks.append((int(frame["branch_start"]), offset))
+        offset += len(line)
+    return blocks
+
+
+def _assert_only_in_exact_positive_macro_blocks(
+    testcase: unittest.TestCase, text: str, token: str, macro: str
+) -> None:
+    positions = [match.start() for match in re.finditer(re.escape(token), text)]
+    testcase.assertTrue(positions, f"missing {token}")
+    blocks = _positive_macro_branch_blocks(text, macro)
+    testcase.assertTrue(blocks, f"missing exact positive guard for {macro}")
+    for position in positions:
+        with testcase.subTest(token=token, position=position):
+            testcase.assertTrue(
+                any(start <= position < end for start, end in blocks),
+                f"{token} is not inside #if defined({macro})",
+            )
+
+
 def _body_after_signature(text: str, signature: str) -> str:
     """Returns one balanced body without relying on line layout."""
 
@@ -252,6 +305,42 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         )
         self.indexed_db_ui = source(
             "chrome/browser/wasm/wasm_profile_renderer_indexed_db_ui.cc"
+        )
+        self.indexed_db_context = source(
+            "content/browser/indexed_db/indexed_db_context_impl.cc"
+        )
+        self.indexed_db_context_header = source(
+            "content/browser/indexed_db/indexed_db_context_impl.h"
+        )
+        self.indexed_db_build = source("content/browser/indexed_db/BUILD.gn")
+        self.indexed_db_context_unit = source(
+            "content/browser/indexed_db/indexed_db_context_unittest.cc"
+        )
+        self.indexed_db_control_wrapper = source(
+            "content/browser/indexed_db/indexed_db_control_wrapper.cc"
+        )
+        self.indexed_db_control_wrapper_header = source(
+            "content/browser/indexed_db/indexed_db_control_wrapper.h"
+        )
+        self.indexed_db_control_wrapper_unit = source(
+            "content/browser/indexed_db/"
+            "indexed_db_control_wrapper_unittest.cc"
+        )
+        self.indexed_db_bucket_context = source(
+            "content/browser/indexed_db/instance/bucket_context.cc"
+        )
+        self.indexed_db_bucket_context_header = source(
+            "content/browser/indexed_db/instance/bucket_context.h"
+        )
+        self.indexed_db_bucket_context_shutdown_receipt_unit = source(
+            "content/browser/indexed_db/instance/"
+            "bucket_context_shutdown_receipt_unittest.cc"
+        )
+        self.storage_partition_impl_source = source(
+            "content/browser/storage_partition_impl.cc"
+        )
+        self.storage_partition_impl_header = source(
+            "content/browser/storage_partition_impl.h"
         )
         self.dom_storage_test_support_header = source(
             "content/public/browser/wasm_dom_storage_test_support.h"
@@ -1239,6 +1328,180 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, self.chrome_main)
 
+    def test_result_bearing_indexed_db_close_is_source_selected(self) -> None:
+        shutdown_macro = (
+            "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE"
+        )
+        shutdown_flag = (
+            "enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe"
+        )
+        wrapper_test_source = '"indexed_db_control_wrapper_unittest.cc"'
+
+        self.assertIn('import("//build/config/wasm.gni")', self.indexed_db_build)
+        probe_config = _body_after_signature(
+            self.indexed_db_build,
+            'config("wasm_m7_persistent_default_partition_shutdown_probe")',
+        )
+        self.assertIn(f'"{shutdown_macro}=1",', probe_config)
+
+        indexed_db_target = _body_after_signature(
+            self.indexed_db_build, 'source_set("indexed_db")'
+        )
+        indexed_db_selector_start = indexed_db_target.index(
+            f"if ({shutdown_flag}) {{"
+        )
+        indexed_db_selector_opening_brace = indexed_db_target.index(
+            "{", indexed_db_selector_start
+        )
+        indexed_db_selector_end = _matching_closing_brace(
+            indexed_db_target,
+            indexed_db_selector_opening_brace,
+            "IndexedDB result-close source selector",
+        )
+        indexed_db_selector = indexed_db_target[
+            indexed_db_selector_opening_brace + 1 : indexed_db_selector_end
+        ]
+        for token in (
+            '":wasm_m7_persistent_default_partition_shutdown_probe"',
+            "configs += [",
+            "public_configs",
+        ):
+            with self.subTest(indexed_db_selector_token=token):
+                self.assertIn(token, indexed_db_selector)
+
+        unit_tests_target = _body_after_signature(
+            self.indexed_db_build, 'source_set("unit_tests")'
+        )
+        unit_tests_selector_start = unit_tests_target.index(
+            f"if ({shutdown_flag}) {{"
+        )
+        unit_tests_selector_opening_brace = unit_tests_target.index(
+            "{", unit_tests_selector_start
+        )
+        unit_tests_selector_end = _matching_closing_brace(
+            unit_tests_target,
+            unit_tests_selector_opening_brace,
+            "IndexedDB result-close unit-test selector",
+        )
+        unit_tests_selector = unit_tests_target[
+            unit_tests_selector_opening_brace + 1 : unit_tests_selector_end
+        ]
+        for token in (
+            '":wasm_m7_persistent_default_partition_shutdown_probe"',
+            "configs += [",
+            f"sources += [ {wrapper_test_source} ]",
+        ):
+            with self.subTest(indexed_db_unit_selector_token=token):
+                self.assertIn(token, unit_tests_selector)
+        self.assertEqual(1, self.indexed_db_build.count(wrapper_test_source))
+
+        dedicated_test = _body_after_signature(
+            self.wasm_browser_build,
+            'test("wasm_profile_persistent_default_partition_shutdown_probe_unittests")',
+        )
+        for token in (
+            '"../../../content/browser/indexed_db/indexed_db_control_wrapper_unittest.cc",',
+            '"//content/browser/indexed_db:wasm_m7_persistent_default_partition_shutdown_receipt_unittests",',
+            '":wasm_profile_m7_persistent_default_partition_shutdown_probe_config",',
+        ):
+            with self.subTest(dedicated_test_token=token):
+                self.assertIn(token, dedicated_test)
+        dedicated_test_position = self.wasm_browser_build.index(
+            'test("wasm_profile_persistent_default_partition_shutdown_probe_unittests")'
+        )
+        dedicated_selector_start = self.wasm_browser_build.rfind(
+            f"if ({shutdown_flag}) {{", 0, dedicated_test_position
+        )
+        self.assertNotEqual(-1, dedicated_selector_start)
+        dedicated_selector_opening_brace = self.wasm_browser_build.index(
+            "{", dedicated_selector_start
+        )
+        dedicated_selector_end = _matching_closing_brace(
+            self.wasm_browser_build,
+            dedicated_selector_opening_brace,
+            "dedicated IndexedDB result-close test selector",
+        )
+        self.assertLess(dedicated_selector_opening_brace, dedicated_test_position)
+        self.assertLess(dedicated_test_position, dedicated_selector_end)
+
+        receipt_test_target = _body_after_signature(
+            self.indexed_db_build,
+            'source_set("wasm_m7_persistent_default_partition_shutdown_receipt_unittests")',
+        )
+        for token in (
+            '"instance/bucket_context_shutdown_receipt_unittest.cc"',
+            '":wasm_m7_persistent_default_partition_shutdown_probe"',
+            '":indexed_db"',
+        ):
+            with self.subTest(receipt_test_target_token=token):
+                self.assertIn(token, receipt_test_target)
+
+        for text, token in (
+            (self.indexed_db_context_header, "static bool ShutdownAndReply("),
+            (self.indexed_db_control_wrapper_header, "bool ShutdownAndReply("),
+            (
+                self.indexed_db_bucket_context_header,
+                "void SealForContextShutdown(base::OnceClosure on_destroyed);",
+            ),
+            (
+                self.indexed_db_bucket_context_header,
+                "base::OnceClosure on_destroyed_after_destruction;",
+            ),
+            (self.indexed_db_context, "class IndexedDBShutdownAndReplyState"),
+            (
+                self.indexed_db_context,
+                "bool IndexedDBContextImpl::ShutdownAndReply(",
+            ),
+            (
+                self.indexed_db_control_wrapper,
+                "bool IndexedDBControlWrapper::ShutdownAndReply(",
+            ),
+            (
+                self.indexed_db_bucket_context,
+                "void BucketContext::SealForContextShutdown(",
+            ),
+            (
+                self.storage_partition_impl_header,
+                "bool ShutdownIndexedDBForWasmTest(base::OnceClosure completion);",
+            ),
+            (
+                self.storage_partition_impl_source,
+                "bool StoragePartitionImpl::ShutdownIndexedDBForWasmTest(",
+            ),
+            (
+                self.indexed_db_context_unit,
+                "ShutdownAndReplySealsFactoryIngress",
+            ),
+            (
+                self.indexed_db_bucket_context_shutdown_receipt_unit,
+                "SealForContextShutdownWithholdsAckWhenFinalPostRejected",
+            ),
+            (
+                self.indexed_db_control_wrapper_unit,
+                "PolicyNotificationAfterResultCloseDoesNotUseClosedControl",
+            ),
+        ):
+            _assert_only_in_exact_positive_macro_blocks(
+                self, text, token, shutdown_macro
+            )
+
+        ordinary_destruction_callback = (
+            "  if (delegate_.on_destroyed) {\n"
+            "    std::move(delegate_.on_destroyed).Run();\n"
+            "  }"
+        )
+        ordinary_callback_position = self.indexed_db_bucket_context.index(
+            ordinary_destruction_callback
+        )
+        self.assertFalse(
+            any(
+                start <= ordinary_callback_position < end
+                for start, end in _positive_macro_branch_blocks(
+                    self.indexed_db_bucket_context, shutdown_macro
+                )
+            )
+        )
+
     def test_persistent_default_partition_shutdown_probe_seals_creation_and_fail_closes(
         self,
     ) -> None:
@@ -1265,6 +1528,9 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             '":wasm_profile_local_storage_smoke",',
             'test("wasm_profile_persistent_default_partition_shutdown_probe_unittests")',
             '":wasm_profile_persistent_default_partition_shutdown_probe",',
+            '"../../../content/browser/indexed_db/indexed_db_control_wrapper_unittest.cc",',
+            '"//content/browser/indexed_db",',
+            '"//storage/browser:test_support",',
         ):
             with self.subTest(token=token):
                 self.assertIn(token, self.wasm_browser_build)
@@ -1484,9 +1750,13 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "content::SiteInstance::Create(browser_context_)",
             "RENDERER_DEFAULT_PARTITION_CONFIG_REUSE_WITNESS_OK",
             "PERSISTENT_INDEXED_DB_RENDERER_WRITE_AND_CLOSE_OK",
+            "PERSISTENT_INDEXED_DB_CONTEXT_CLOSED",
             "WasmProfileIndexedDBLifetimeParticipant",
             "kIndexedDBOperationTimeout",
+            "kIndexedDBContextShutdownTimeout",
             "indexed_db_participant_->QuarantineForFailureShutdown()",
+            "indexed_db_context_shutdown_profile_io_hold_",
+            "ShutdownWasmStoragePartitionIndexedDBForTest(",
             "TakeRendererConfigForSite(",
             "renderer_default_partition_config_",
             "renderer_indexed_db_page_url_",
@@ -1507,6 +1777,207 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
                 self.assertIn(token, self.indexed_db_smoke)
         self.assertIn("emit_protocol_markers = true", self.indexed_db_smoke_header)
         self.assertIn("m7-indexed-db", self.indexed_db_ui)
+        indexed_db_context_close_start = _body_after_signature(
+            self.shutdown_probe, "  void StartIndexedDBContextShutdownReceipt()"
+        )
+        for token in (
+            "TryAcquireWasmProfileStorageProfileIO()",
+            "indexed_db_context_shutdown_profile_io_hold_.emplace(",
+            "indexed_db_context_shutdown_started_ = true;",
+            "content::ShutdownWasmStoragePartitionIndexedDBForTest(",
+            "OnIndexedDBContextShutdownClosed",
+            "OnIndexedDBContextShutdownTimeout",
+        ):
+            with self.subTest(indexed_db_context_close_token=token):
+                self.assertIn(token, indexed_db_context_close_start)
+        self.assertLess(
+            indexed_db_context_close_start.index(
+                "indexed_db_context_shutdown_started_ = true;"
+            ),
+            indexed_db_context_close_start.index(
+                "content::ShutdownWasmStoragePartitionIndexedDBForTest("
+            ),
+        )
+        self.assertIn(
+            "if (!indexed_db_context_shutdown_acknowledged_ && !failure_reported_)",
+            indexed_db_context_close_start,
+        )
+        indexed_db_context_closed = _body_after_signature(
+            self.shutdown_probe, "  void OnIndexedDBContextShutdownClosed()"
+        )
+        for token in (
+            "ProfileIOCompletion::\n                kSucceeded",
+            "indexed_db_context_shutdown_acknowledged_ = true;",
+            'EmitMarker("PERSISTENT_INDEXED_DB_CONTEXT_CLOSED");',
+            "StartCookieReceipt();",
+        ):
+            with self.subTest(indexed_db_context_closed_token=token):
+                self.assertIn(token, indexed_db_context_closed)
+        self.assertLess(
+            indexed_db_context_closed.index(
+                'EmitMarker("PERSISTENT_INDEXED_DB_CONTEXT_CLOSED");'
+            ),
+            indexed_db_context_closed.index("StartCookieReceipt();"),
+        )
+        self.assertLess(
+            self.shutdown_probe.index(
+                'EmitMarker("PERSISTENT_INDEXED_DB_RENDERER_WRITE_AND_CLOSE_OK");'
+            ),
+            self.shutdown_probe.index(
+                'EmitMarker("PERSISTENT_INDEXED_DB_CONTEXT_CLOSED");'
+            ),
+        )
+        self.assertLess(
+            self.shutdown_probe.index(
+                'EmitMarker("PERSISTENT_INDEXED_DB_CONTEXT_CLOSED");'
+            ),
+            self.shutdown_probe.index(
+                'EmitMarker("PERSISTENT_COOKIE_WRITE_ACCEPTED");'
+            ),
+        )
+        start_cookie_receipt = _body_after_signature(
+            self.shutdown_probe, "  void StartCookieReceipt()"
+        )
+        self.assertIn(
+            "!indexed_db_context_shutdown_acknowledged_", start_cookie_receipt
+        )
+        self.assertIn(
+            "bool indexed_db_context_shutdown_acknowledged,",
+            self.shutdown_probe_header,
+        )
+        for token in (
+            "bool IndexedDBContextImpl::ShutdownAndReply(",
+            "shutdown_in_progress_ = true;",
+            "control_receivers_.Clear();",
+            "test_receivers_.Clear();",
+            "quota_client_receiver_.reset();",
+            "InitializeFromFilesIfNeeded(base::BindOnce(",
+            "ContinueShutdownAndReplyAfterInitialization",
+            "IndexedDBContextOnTaskRunner",
+            "base::OnTaskRunnerDeleter",
+            "HoldUntilFinished",
+            "detached_bucket_context_generations_",
+            "OnDetachedBucketContextDestroyed",
+            "destruction_barrier",
+            "seal_barrier",
+            "BucketContext::SealForContextShutdown",
+            "FinishShutdownAndReply",
+        ):
+            with self.subTest(indexed_db_context_impl_token=token):
+                self.assertIn(token, self.indexed_db_context)
+        self.assertIn(
+            "Returns false without consuming |context|", self.indexed_db_context_header
+        )
+        bind_pipes = _body_after_signature(
+            self.indexed_db_context,
+            "void IndexedDBContextImpl::BindPipesOnIDBSequence(",
+        )
+        self.assertIn("if (shutdown_in_progress_)", bind_pipes)
+        delete_bucket_data = _body_after_signature(
+            self.indexed_db_context,
+            "void IndexedDBContextImpl::DeleteBucketData(",
+        )
+        self.assertIn("blink::mojom::QuotaStatusCode::kErrorAbort", delete_bucket_data)
+        self.assertIn("if (shutdown_in_progress_)", delete_bucket_data)
+        public_force_close = _body_after_signature(
+            self.indexed_db_context,
+            "void IndexedDBContextImpl::ForceClose(storage::BucketId bucket_id,",
+        )
+        self.assertIn("if (shutdown_in_progress_)", public_force_close)
+        wrapper_close = _body_after_signature(
+            self.indexed_db_control_wrapper,
+            "bool IndexedDBControlWrapper::ShutdownAndReply(",
+        )
+        for token in (
+            "storage_policy_observer_.reset();",
+            "indexed_db_control_.reset();",
+        ):
+            with self.subTest(indexed_db_wrapper_close_token=token):
+                self.assertIn(token, wrapper_close)
+        for signature in (
+            "void IndexedDBControlWrapper::BindIndexedDB(",
+            "void IndexedDBControlWrapper::OnSpecialStoragePolicyUpdated(",
+        ):
+            self.assertIn(
+                "if (!context_)",
+                _body_after_signature(self.indexed_db_control_wrapper, signature),
+            )
+        for token in (
+            "PolicyNotificationAfterResultCloseDoesNotUseClosedControl",
+            "ShutdownAndReply(base::BindPostTask",
+            "HasObserverForTesting",
+            "InitializeMojoCoreForIndexedDBControlWrapperTests",
+            "BindNewPipeAndPassRemote",
+            "AddSessionOnly",
+            "NotifyPolicyChanged",
+        ):
+            with self.subTest(indexed_db_wrapper_unit_token=token):
+                self.assertIn(token, self.indexed_db_control_wrapper_unit)
+        for token in (
+            "BucketContext::InsertTeardownStepForTesting",
+            "BucketContext::InsertDestructionStepForTesting",
+            "BucketContext::InsertFinalDestructionStepForTesting",
+            "EXPECT_TRUE(teardown_step_ran->load());",
+            "EXPECT_TRUE(destruction_step_ran->load());",
+            "EXPECT_TRUE(final_destruction_step_ran->load());",
+            "ShutdownAndReplySealsFactoryIngress",
+            "ShutdownAndReplyWaitsForAlreadyDetachedBucketDestruction",
+            "ShutdownAndReplySealsQueuedDestructionBeforePurge",
+            "ShutdownAndReplyDoesNotConsumeOnRejectedPost",
+            "factory.set_disconnect_handler",
+        ):
+            with self.subTest(indexed_db_context_unit_token=token):
+                self.assertIn(token, self.indexed_db_context_unit)
+        for token in (
+            "SealForContextShutdownWithholdsAckWhenFinalPostRejected",
+            "RejectNextPostTaskRunner",
+            "RejectNextPost",
+            "rejected_post_count",
+        ):
+            with self.subTest(indexed_db_bucket_context_unit_token=token):
+                self.assertIn(
+                    token, self.indexed_db_bucket_context_shutdown_receipt_unit
+                )
+        for token in (
+            "void SealForContextShutdown(base::OnceClosure on_destroyed);",
+            "bool context_shutdown_in_progress_ = false;",
+            "InsertDestructionStepForTesting",
+            "InsertFinalDestructionStepForTesting",
+            "on_destroyed_after_destruction",
+        ):
+            with self.subTest(indexed_db_bucket_context_header_token=token):
+                self.assertIn(token, self.indexed_db_bucket_context_header)
+        sealed_bucket = _body_after_signature(
+            self.indexed_db_bucket_context,
+            "void BucketContext::SealForContextShutdown(",
+        )
+        for token in (
+            "context_shutdown_in_progress_ = true;",
+            "delegate().on_ready_for_destruction.Reset();",
+            "receivers_.Clear();",
+            "DoForceClose(/*doom=*/false, \"Context shutdown\");",
+            "delegate().on_destroyed_after_destruction",
+        ):
+            with self.subTest(sealed_bucket_token=token):
+                self.assertIn(token, sealed_bucket)
+        for signature in (
+            "void BucketContext::AddReceiver(",
+            "void BucketContext::GetDatabaseInfo(",
+            "void BucketContext::Open(",
+            "void BucketContext::DeleteDatabase(",
+        ):
+            with self.subTest(bucket_entrypoint=signature):
+                self.assertIn(
+                    "if (context_shutdown_in_progress_)",
+                    _body_after_signature(self.indexed_db_bucket_context, signature),
+                )
+        for token in (
+            "bool StoragePartitionImpl::ShutdownIndexedDBForWasmTest(",
+            "if (!indexed_db_control_wrapper_)",
+            "Mojo disconnect",
+        ):
+            with self.subTest(storage_partition_close_token=token):
+                self.assertIn(token, self.storage_partition_impl_source)
         for token in (
             "partition_->GetCookieManagerForBrowserProcess();",
             "cookie_manager->CloneInterface(",
@@ -1790,6 +2261,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "ArmWasmStoragePartitionShutdownNotificationForTest(",
             "DidWasmStoragePartitionShutdownNotificationForTest();",
             "CancelWasmStoragePartitionShutdownNotificationForTest();",
+            "ShutdownWasmStoragePartitionIndexedDBForTest(",
             "StoragePartitionImpl::OnBrowserContextWillBeDestroyed()",
             "not an asynchronous service",
         ):

@@ -58,6 +58,8 @@ constexpr char kCookieName[] =
 constexpr char kRendererIndexedDBPageURL[] = "chrome://m7-indexed-db/";
 constexpr base::TimeDelta kLocalStorageOperationTimeout = base::Seconds(20);
 constexpr base::TimeDelta kIndexedDBOperationTimeout = base::Seconds(20);
+constexpr base::TimeDelta kIndexedDBContextShutdownTimeout =
+    base::Seconds(20);
 constexpr base::TimeDelta kCookieOperationTimeout = base::Seconds(20);
 
 WasmProfileLocalStorageSmokeInput CreateLocalStorageReceiptInput() {
@@ -451,10 +453,8 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
     indexed_db_receipt_completed_ = true;
     indexed_db_renderer_write_and_close_acknowledged_ = true;
     indexed_db_participant_.reset();
-    renderer_default_partition_config_.reset();
-    renderer_indexed_db_page_url_.reset();
     EmitMarker("PERSISTENT_INDEXED_DB_RENDERER_WRITE_AND_CLOSE_OK");
-    StartCookieReceipt();
+    StartIndexedDBContextShutdownReceipt();
   }
 
   void OnIndexedDBOperationTimeout() {
@@ -464,6 +464,118 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
     FailIndexedDBReceipt();
   }
 
+  void StartIndexedDBContextShutdownReceipt() {
+    if (!enabled_ || failure_reported_ || !partition_created_ ||
+        !browser_context_ || !partition_ ||
+        !IsCapturedDefaultPartitionStillSoleLoaded() ||
+        !indexed_db_receipt_completed_ ||
+        !indexed_db_renderer_write_and_close_acknowledged_ ||
+        indexed_db_context_shutdown_started_ ||
+        indexed_db_context_shutdown_acknowledged_ ||
+        indexed_db_context_shutdown_profile_io_hold_ ||
+        !owner_receipts_completion_) {
+      ReportFailure(
+          WasmPersistentDefaultPartitionShutdownProbeFailureStage::kIndexedDB);
+      ScheduleSelectedOwnerReceiptsCompletion(/*success=*/false);
+      return;
+    }
+
+    std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+        indexed_db_context_shutdown_profile_io_hold =
+            TryAcquireWasmProfileStorageProfileIO();
+    if (!indexed_db_context_shutdown_profile_io_hold) {
+      ReportFailure(
+          WasmPersistentDefaultPartitionShutdownProbeFailureStage::kAdmission);
+      ScheduleSelectedOwnerReceiptsCompletion(/*success=*/false);
+      return;
+    }
+
+    indexed_db_context_shutdown_profile_io_hold_.emplace(
+        std::move(*indexed_db_context_shutdown_profile_io_hold));
+    // Mark the operation before handing the callback to the partition. The
+    // current IndexedDB implementation posts this asynchronously, but this
+    // state machine must also remain correct for a same-sequence test runner
+    // that resolves the receipt before the initiating call returns.
+    indexed_db_context_shutdown_started_ = true;
+    if (!content::ShutdownWasmStoragePartitionIndexedDBForTest(
+            partition_,
+            base::BindOnce(&WasmPersistentDefaultPartitionShutdownProbeState::
+                               OnIndexedDBContextShutdownClosed,
+                           weak_ptr_factory_.GetWeakPtr()))) {
+      indexed_db_context_shutdown_started_ = false;
+      (void)indexed_db_context_shutdown_profile_io_hold_->Complete(
+          WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
+      indexed_db_context_shutdown_profile_io_hold_.reset();
+      ReportFailure(
+          WasmPersistentDefaultPartitionShutdownProbeFailureStage::kIndexedDB);
+      ScheduleSelectedOwnerReceiptsCompletion(/*success=*/false);
+      return;
+    }
+
+    if (!indexed_db_context_shutdown_acknowledged_ && !failure_reported_) {
+      indexed_db_context_shutdown_timeout_.Start(
+          FROM_HERE, kIndexedDBContextShutdownTimeout,
+          base::BindOnce(&WasmPersistentDefaultPartitionShutdownProbeState::
+                             OnIndexedDBContextShutdownTimeout,
+                         weak_ptr_factory_.GetWeakPtr()));
+    }
+  }
+
+  void OnIndexedDBContextShutdownClosed() {
+    indexed_db_context_shutdown_timeout_.Stop();
+    if (failure_reported_) {
+      // The source-selected failure path deliberately leaves the operation's
+      // admission outstanding. A late callback cannot transform that
+      // fail-closed result into a handoff authorization.
+      return;
+    }
+    if (!indexed_db_context_shutdown_started_ ||
+        indexed_db_context_shutdown_acknowledged_ ||
+        !indexed_db_context_shutdown_profile_io_hold_ || !partition_created_ ||
+        !browser_context_ || !partition_ ||
+        !IsCapturedDefaultPartitionStillSoleLoaded()) {
+      FailIndexedDBContextShutdownReceipt();
+      return;
+    }
+
+    if (!indexed_db_context_shutdown_profile_io_hold_->Complete(
+            WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::
+                kSucceeded)) {
+      indexed_db_context_shutdown_profile_io_hold_.reset();
+      FailIndexedDBContextShutdownReceipt();
+      return;
+    }
+    indexed_db_context_shutdown_profile_io_hold_.reset();
+    indexed_db_context_shutdown_acknowledged_ = true;
+    renderer_default_partition_config_.reset();
+    renderer_indexed_db_page_url_.reset();
+    EmitMarker("PERSISTENT_INDEXED_DB_CONTEXT_CLOSED");
+    StartCookieReceipt();
+  }
+
+  void OnIndexedDBContextShutdownTimeout() {
+    if (!indexed_db_context_shutdown_started_ ||
+        indexed_db_context_shutdown_acknowledged_) {
+      return;
+    }
+    FailIndexedDBContextShutdownReceipt();
+  }
+
+  void FailIndexedDBContextShutdownReceipt() {
+    indexed_db_context_shutdown_timeout_.Stop();
+    if (!indexed_db_context_shutdown_started_ ||
+        indexed_db_context_shutdown_acknowledged_ || failure_reported_) {
+      return;
+    }
+    // Leave this separate admission active rather than completing it as
+    // failed. A lost close callback means IndexedDBContextImpl may still own a
+    // live bucket; the outer V4 adapter must refuse before either drain or
+    // failure retirement can touch its OPFS backend.
+    ReportFailure(
+        WasmPersistentDefaultPartitionShutdownProbeFailureStage::kIndexedDB);
+    ScheduleSelectedOwnerReceiptsCompletion(/*success=*/false);
+  }
+
   void StartCookieReceipt() {
     if (!enabled_ || failure_reported_ || !partition_created_ ||
         !partition_ || !local_storage_receipt_completed_ ||
@@ -471,6 +583,7 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
         !renderer_default_partition_config_reuse_witness_ ||
         !indexed_db_receipt_completed_ ||
         !indexed_db_renderer_write_and_close_acknowledged_ ||
+        !indexed_db_context_shutdown_acknowledged_ ||
         cookie_phase_started_ || !owner_receipts_completion_) {
       ReportFailure(
           WasmPersistentDefaultPartitionShutdownProbeFailureStage::kCookie);
@@ -480,8 +593,8 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
 
     // The third selected owner is a network-owned Cookies SQLite store. Its
     // logical-row readback and backend-close receipt must follow the closed
-    // LocalStorage and renderer IndexedDB receipts before BrowserMainParts
-    // begins profile teardown.
+    // LocalStorage and renderer IndexedDB/context receipts before
+    // BrowserMainParts begins profile teardown.
     network::mojom::CookieManager* const cookie_manager =
         partition_->GetCookieManagerForBrowserProcess();
     if (!cookie_manager) {
@@ -641,6 +754,11 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
       FailIndexedDBReceipt();
       return;
     }
+    if (indexed_db_context_shutdown_started_ &&
+        !indexed_db_context_shutdown_acknowledged_) {
+      FailIndexedDBContextShutdownReceipt();
+      return;
+    }
     if (cookie_phase_started_ && !cookie_phase_completed_) {
       FailCookieReceipt();
       return;
@@ -700,6 +818,13 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
         indexed_db_participant_.reset();
       }
     }
+    if (indexed_db_context_shutdown_started_ &&
+        !indexed_db_context_shutdown_acknowledged_) {
+      // Keep the dedicated close admission alive in this process-lifetime
+      // singleton. The generic primary hold alone cannot prove that an async
+      // IndexedDBContextImpl close has stopped using the profile backend.
+      indexed_db_context_shutdown_timeout_.Stop();
+    }
     renderer_default_partition_config_.reset();
     // Once every active LocalStorage participant has moved its own
     // or IndexedDB participant into quarantine, this singleton must not
@@ -743,6 +868,7 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
         local_storage_on_disk_commit_and_close_acknowledged_,
         renderer_default_partition_config_reuse_witness_,
         indexed_db_renderer_write_and_close_acknowledged_,
+        indexed_db_context_shutdown_acknowledged_,
         cookie_write_accepted_, cookie_store_flush_acknowledged_,
         cookie_sqlite_row_readback_succeeded_,
         cookie_store_close_acknowledged_);
@@ -1034,6 +1160,8 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
   bool indexed_db_receipt_started_ = false;
   bool indexed_db_receipt_completed_ = false;
   bool indexed_db_renderer_write_and_close_acknowledged_ = false;
+  bool indexed_db_context_shutdown_started_ = false;
+  bool indexed_db_context_shutdown_acknowledged_ = false;
   bool cookie_phase_started_ = false;
   bool cookie_phase_completed_ = false;
   bool cookie_quarantined_ = false;
@@ -1054,6 +1182,8 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
   bool failure_reported_ = false;
   std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
       profile_io_hold_;
+  std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+      indexed_db_context_shutdown_profile_io_hold_;
   raw_ptr<content::BrowserContext> browser_context_ = nullptr;
   raw_ptr<content::StoragePartition> partition_ = nullptr;
   std::optional<content::StoragePartitionConfig>
@@ -1068,6 +1198,7 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
   base::OnceCallback<void(bool success)> owner_receipts_completion_;
   base::OneShotTimer local_storage_operation_timeout_;
   base::OneShotTimer indexed_db_operation_timeout_;
+  base::OneShotTimer indexed_db_context_shutdown_timeout_;
   base::OneShotTimer cookie_operation_timeout_;
   SEQUENCE_CHECKER(cookie_sequence_checker_);
   base::WeakPtrFactory<WasmPersistentDefaultPartitionShutdownProbeState>
@@ -1120,6 +1251,7 @@ bool IsWasmPersistentDefaultPartitionSelectedOwnerReceiptWitness(
     bool local_storage_on_disk_commit_and_close_acknowledged,
     bool renderer_default_partition_config_reuse_witness,
     bool indexed_db_renderer_write_and_close_acknowledged,
+    bool indexed_db_context_shutdown_acknowledged,
     bool cookie_write_accepted,
     bool cookie_store_flush_acknowledged,
     bool cookie_sqlite_row_readback_succeeded,
@@ -1128,6 +1260,7 @@ bool IsWasmPersistentDefaultPartitionSelectedOwnerReceiptWitness(
          local_storage_on_disk_commit_and_close_acknowledged &&
          renderer_default_partition_config_reuse_witness &&
          indexed_db_renderer_write_and_close_acknowledged &&
+         indexed_db_context_shutdown_acknowledged &&
          IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(
              cookie_write_accepted, cookie_store_flush_acknowledged,
              cookie_sqlite_row_readback_succeeded,

@@ -1702,8 +1702,35 @@ StoragePartitionImpl::GetSharedStorageRuntimeManager() {
 
 storage::mojom::IndexedDBControl& StoragePartitionImpl::GetIndexedDBControl() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // The source-selected result-bearing close intentionally makes this one
+  // partition's IndexedDB control unavailable. A caller that reaches this
+  // boundary is a probe protocol violation, not a valid reopen.
+  CHECK(indexed_db_control_wrapper_);
+#endif
   return indexed_db_control_wrapper_->GetIndexedDBControl();
 }
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+bool StoragePartitionImpl::ShutdownIndexedDBForWasmTest(
+    base::OnceClosure completion) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  if (!initialized_ || !indexed_db_control_wrapper_ || !completion) {
+    return false;
+  }
+
+  // Move the wrapper out before starting the asynchronous context close. Its
+  // context is transferred to the result-bearing path, so destruction of the
+  // now-empty wrapper cannot initiate an unobserved duplicate shutdown.
+  std::unique_ptr<indexed_db::IndexedDBControlWrapper> wrapper =
+      std::move(indexed_db_control_wrapper_);
+  if (!wrapper->ShutdownAndReply(std::move(completion))) {
+    indexed_db_control_wrapper_ = std::move(wrapper);
+    return false;
+  }
+  return true;
+}
+#endif
 
 FileSystemAccessEntryFactory*
 StoragePartitionImpl::GetFileSystemAccessEntryFactory() {
@@ -3438,6 +3465,14 @@ void StoragePartitionImpl::BindIndexedDB(
     mojo::PendingRemote<storage::mojom::IndexedDBClientStateChecker>
         client_state_checker_remote,
     mojo::PendingReceiver<blink::mojom::IDBFactory> receiver) {
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  if (!indexed_db_control_wrapper_) {
+    // Destroying the pending receiver makes a late renderer request observe a
+    // Mojo disconnect rather than dereferencing the selected context after
+    // its close fence has begun.
+    return;
+  }
+#endif
   indexed_db_control_wrapper_->BindIndexedDB(
       bucket_locator, client_info, std::move(client_state_checker_remote),
       std::move(receiver));

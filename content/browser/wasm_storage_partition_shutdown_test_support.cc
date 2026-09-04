@@ -9,6 +9,9 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
+#include "base/task/bind_post_task.h"
+#include "base/task/sequenced_task_runner.h"
+#include "content/browser/storage_partition_impl.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/wasm_storage_partition_shutdown_test_support.h"
 
@@ -92,6 +95,23 @@ bool DidWasmStoragePartitionShutdownNotificationForTest() {
 
 void CancelWasmStoragePartitionShutdownNotificationForTest() {
   GetNotificationState().Cancel();
+}
+
+bool ShutdownWasmStoragePartitionIndexedDBForTest(
+    StoragePartition* partition,
+    base::OnceClosure on_closed) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  if (!partition || !on_closed) {
+    return false;
+  }
+
+  // IndexedDBContextImpl resolves its close callback on its own sequence.
+  // Preserve the caller's UI-sequence ownership boundary before the probe can
+  // touch the BrowserContext again.
+  return static_cast<StoragePartitionImpl*>(partition)
+      ->ShutdownIndexedDBForWasmTest(base::BindPostTask(
+          base::SequencedTaskRunner::GetCurrentDefault(),
+          std::move(on_closed)));
 }
 
 namespace internal {
