@@ -32,6 +32,10 @@ namespace chrome {
 // derivation, then permits later nonallocating SiteInfo/frame-host config
 // derivations and proves renderer use from the actual committed partition plus
 // sole-map/no-create observations.
+// Before the first owner receipt it also requires the exact mounted profile
+// directory to acknowledge a result-bearing POSIX fsync. This is a namespace
+// capability receipt only; it does not claim that every profile service has
+// closed or that a physical crash has been survived.
 // The Cache API operation is not a Cache Storage close/flush receipt. It
 // deliberately does not claim an aggregate partition close, a durable profile
 // flush, recovery, or fresh-document persistence.

@@ -1646,6 +1646,10 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "partition->GetPath() == browser_context->GetPath()",
             "IsCapturedDefaultPartitionStillSoleLoaded()",
             'EmitMarker("DEFAULT_PARTITION_CREATED");',
+            "SyncWasmProfileStorageDirectory()",
+            "WasmProfileStorageDirectorySyncProven()",
+            "profile_directory_sync_acknowledged_ = true;",
+            'EmitMarker("PROFILE_DIRECTORY_FSYNC_OK");',
         ):
             with self.subTest(token=token):
                 self.assertIn(token, shutdown_run)
@@ -1658,6 +1662,14 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.assertLess(
             shutdown_run.index("browser_context->GetDefaultStoragePartition();"),
             shutdown_run.index("policy_query_phase_ = PolicyQueryPhase::kNone;"),
+        )
+        self.assertLess(
+            shutdown_run.index("SyncWasmProfileStorageDirectory()"),
+            shutdown_run.index('EmitMarker("DEFAULT_PARTITION_CREATED");'),
+        )
+        self.assertLess(
+            shutdown_run.index('EmitMarker("DEFAULT_PARTITION_CREATED");'),
+            shutdown_run.index('EmitMarker("PROFILE_DIRECTORY_FSYNC_OK");'),
         )
         self.assertGreaterEqual(
             self.shutdown_probe.count("GetStoragePartition("), 2
@@ -2330,6 +2342,12 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
                     "HasSelectedOwnerReceiptWitness()",
                     _body_after_signature(self.shutdown_probe, signature),
                 )
+        self.assertIn(
+            "profile_directory_sync_acknowledged_",
+            _body_after_signature(
+                self.shutdown_probe, "  bool CanUseFailureRetirement() const"
+            ),
+        )
 
         for token in (
             "ArmWasmStoragePartitionShutdownNotificationForTest(",

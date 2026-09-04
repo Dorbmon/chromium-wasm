@@ -36,6 +36,19 @@ bool InitializeWasmProfilePreferencesStorage();
 // Returns true only while the exact V4 leased-OPFS mount remains available.
 bool IsWasmProfileStorageMounted();
 
+// Synchronizes the mounted profile directory's namespace metadata through
+// the backend's result-bearing directory fsync seam. This is deliberately
+// fail-closed: a backend that cannot acknowledge directory metadata sync must
+// not be used for a profile handoff. The call is valid on Chromium's
+// application pthread while the profile mount is live and returns false for
+// an unmounted, sealed, or already-drained backend.
+bool SyncWasmProfileStorageDirectory();
+
+// Reports whether initialization (or a later explicit sync) observed a
+// successful directory fsync for the exact leased profile mount. This is a
+// capability receipt, not a claim that every profile service has closed.
+bool WasmProfileStorageDirectorySyncProven();
+
 // Returns true when ChromeMain must drain the exact V4 leased backend after its
 // ContentMain delegate scope is gone. This is also true after a failed mount
 // if backend construction acquired the lease: cleanup must not race startup

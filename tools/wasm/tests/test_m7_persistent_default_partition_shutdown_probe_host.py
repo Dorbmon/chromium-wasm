@@ -43,6 +43,9 @@ export default function(options) {
   if (globalThis.__scenario === "lease-release") {
     options.printErr(retirement + "LEASE_RELEASED");
   } else {
+    if (globalThis.__scenario !== "missing-profile-directory-fsync") {
+      options.printErr(shutdown + "PROFILE_DIRECTORY_FSYNC_OK");
+    }
     if (globalThis.__scenario !== "missing-local-storage-map-update-close") {
       options.printErr(
           shutdown + "PERSISTENT_LOCAL_STORAGE_ON_DISK_MAP_UPDATE_AND_CLOSE_OK");
@@ -113,7 +116,7 @@ if (!globalThis.crypto || !globalThis.crypto.subtle) {
   globalThis.crypto = webcrypto;
 }
 const scenario = process.argv[1];
-if (!new Set(["resolved", "exit-status", "lease-release", "missing-local-storage-map-update-close", "missing-renderer-config-reuse", "missing-indexed-db-close", "missing-cache-api-write-readback", "missing-cache-api-selected-backend-close-and-index-replaced", "missing-indexed-db-context-close", "missing-cookie-close", "missing-cookie-sqlite-row-readback", "missing-notification"]).has(scenario)) {
+if (!new Set(["resolved", "exit-status", "lease-release", "missing-profile-directory-fsync", "missing-local-storage-map-update-close", "missing-renderer-config-reuse", "missing-indexed-db-close", "missing-cache-api-write-readback", "missing-cache-api-selected-backend-close-and-index-replaced", "missing-indexed-db-context-close", "missing-cookie-close", "missing-cookie-sqlite-row-readback", "missing-notification"]).has(scenario)) {
   throw new Error("test scenario is invalid");
 }
 globalThis.__scenario = scenario;
@@ -248,6 +251,7 @@ if (scenario === "resolved" || scenario === "exit-status") {
           "--wasm-persistent-default-partition-shutdown-probe=" ||
       result.run.markers.join(",") !== [
         "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:DEFAULT_PARTITION_CREATED",
+        "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:PROFILE_DIRECTORY_FSYNC_OK",
         "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:PERSISTENT_LOCAL_STORAGE_ON_DISK_MAP_UPDATE_AND_CLOSE_OK",
         "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:RENDERER_DEFAULT_PARTITION_CONFIG_REUSE_WITNESS_OK",
         "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN:PERSISTENT_INDEXED_DB_RENDERER_WRITE_AND_CLOSE_OK",
@@ -268,6 +272,7 @@ if (scenario === "resolved" || scenario === "exit-status") {
       ].join(",") || result.run.processExitCount !== 1 ||
       result.run.processExitCode !== 23 || result.run.onExitCount !== 1 ||
       result.run.runtimeExitCode !== 23 || result.creationSealProven !== true ||
+      result.profileDirectoryFsyncProven !== true ||
       result.persistentDefaultPartitionLocalStorageMapUpdateAndCloseReceiptProven !== true ||
       result.persistentDefaultPartitionRendererConfigReuseWitnessProven !== true ||
       result.persistentDefaultPartitionIndexedDBRendererWriteAndCloseReceiptProven !== true ||
@@ -298,49 +303,54 @@ if (scenario === "resolved" || scenario === "exit-status") {
       result.run.markers.length !== 1 || root.dataset.state !== "fail") {
     throw new Error("host accepted a lease release marker");
   }
-} else if (scenario === "missing-local-storage-map-update-close") {
+} else if (scenario === "missing-profile-directory-fsync") {
   if (result.status !== "fail" || result.run.leaseReleasedMarkerObserved !== false ||
       result.run.markers.length !== 1 || root.dataset.state !== "fail") {
+    throw new Error("host accepted a missing profile-directory fsync receipt");
+  }
+} else if (scenario === "missing-local-storage-map-update-close") {
+  if (result.status !== "fail" || result.run.leaseReleasedMarkerObserved !== false ||
+      result.run.markers.length !== 2 || root.dataset.state !== "fail") {
     throw new Error("host accepted a missing LocalStorage map-update-and-close receipt");
   }
 } else if (scenario === "missing-renderer-config-reuse") {
   if (result.status !== "fail" || result.run.leaseReleasedMarkerObserved !== false ||
-      result.run.markers.length !== 2 || root.dataset.state !== "fail") {
+      result.run.markers.length !== 3 || root.dataset.state !== "fail") {
     throw new Error("host accepted a missing renderer config-reuse receipt");
   }
 } else if (scenario === "missing-indexed-db-close") {
   if (result.status !== "fail" || result.run.leaseReleasedMarkerObserved !== false ||
-      result.run.markers.length !== 3 || root.dataset.state !== "fail") {
+      result.run.markers.length !== 4 || root.dataset.state !== "fail") {
     throw new Error("host accepted a missing renderer IndexedDB close receipt");
   }
 } else if (scenario === "missing-cache-api-write-readback") {
   if (result.status !== "fail" || result.run.leaseReleasedMarkerObserved !== false ||
-      result.run.markers.length !== 4 || root.dataset.state !== "fail") {
+      result.run.markers.length !== 5 || root.dataset.state !== "fail") {
     throw new Error("host accepted a missing Cache API write/readback receipt");
   }
 } else if (scenario === "missing-cache-api-selected-backend-close-and-index-replaced") {
   if (result.status !== "fail" || result.run.leaseReleasedMarkerObserved !== false ||
-      result.run.markers.length !== 5 || root.dataset.state !== "fail") {
+      result.run.markers.length !== 6 || root.dataset.state !== "fail") {
     throw new Error("host accepted a missing Cache API backend close/index replacement receipt");
   }
 } else if (scenario === "missing-indexed-db-context-close") {
   if (result.status !== "fail" || result.run.leaseReleasedMarkerObserved !== false ||
-      result.run.markers.length !== 6 || root.dataset.state !== "fail") {
+      result.run.markers.length !== 7 || root.dataset.state !== "fail") {
     throw new Error("host accepted a missing IndexedDB context close receipt");
   }
 } else if (scenario === "missing-cookie-close") {
   if (result.status !== "fail" || result.run.leaseReleasedMarkerObserved !== false ||
-      result.run.markers.length !== 10 || root.dataset.state !== "fail") {
+      result.run.markers.length !== 11 || root.dataset.state !== "fail") {
     throw new Error("host accepted a missing CookieManager close receipt");
   }
 } else if (scenario === "missing-cookie-sqlite-row-readback") {
   if (result.status !== "fail" || result.run.leaseReleasedMarkerObserved !== false ||
-      result.run.markers.length !== 9 || root.dataset.state !== "fail") {
+      result.run.markers.length !== 10 || root.dataset.state !== "fail") {
     throw new Error("host accepted a missing network-owned SQLite row readback receipt");
   }
 } else {
   if (result.status !== "fail" || result.run.leaseReleasedMarkerObserved !== false ||
-      result.run.markers.length !== 13 || root.dataset.state !== "fail") {
+      result.run.markers.length !== 14 || root.dataset.state !== "fail") {
     throw new Error("host accepted a missing destruction-notification receipt");
   }
 }
@@ -360,72 +370,75 @@ class M7PersistentDefaultPartitionShutdownProbeHostTest(unittest.TestCase):
             "this.run.markers[0] === DEFAULT_PARTITION_CREATED_MARKER", source
         )
         self.assertIn(
-            "this.run.markers[1] ===\n"
+            "this.run.markers[1] === PROFILE_DIRECTORY_FSYNC_OK_MARKER", source
+        )
+        self.assertIn(
+            "this.run.markers[2] ===\n"
             "              PERSISTENT_LOCAL_STORAGE_ON_DISK_MAP_UPDATE_AND_CLOSE_OK_MARKER",
             source,
         )
         self.assertIn(
-            "this.run.markers[2] ===\n"
+            "this.run.markers[3] ===\n"
             "              RENDERER_DEFAULT_PARTITION_CONFIG_REUSE_WITNESS_OK_MARKER",
             source,
         )
         self.assertIn(
-            "this.run.markers[3] ===\n"
+            "this.run.markers[4] ===\n"
             "              PERSISTENT_INDEXED_DB_RENDERER_WRITE_AND_CLOSE_OK_MARKER",
             source,
         )
         self.assertIn(
-            "this.run.markers[4] ===\n"
+            "this.run.markers[5] ===\n"
             "              PERSISTENT_CACHE_API_RENDERER_WRITE_AND_READBACK_OK_MARKER",
             source,
         )
         self.assertIn(
-            "this.run.markers[5] ===\n"
+            "this.run.markers[6] ===\n"
             "              PERSISTENT_CACHE_API_SELECTED_BACKEND_CLOSE_AND_INDEX_REPLACED_OK_MARKER",
             source,
         )
         self.assertIn(
-            "this.run.markers[6] === PERSISTENT_INDEXED_DB_CONTEXT_CLOSED_MARKER",
+            "this.run.markers[7] === PERSISTENT_INDEXED_DB_CONTEXT_CLOSED_MARKER",
             source,
         )
         self.assertIn(
-            "this.run.markers[7] === PERSISTENT_COOKIE_WRITE_ACCEPTED_MARKER",
+            "this.run.markers[8] === PERSISTENT_COOKIE_WRITE_ACCEPTED_MARKER",
             source,
         )
         self.assertIn(
-            "this.run.markers[8] ===\n"
+            "this.run.markers[9] ===\n"
             "              PERSISTENT_COOKIE_STORE_FLUSH_ACKNOWLEDGED_MARKER",
             source,
         )
         self.assertIn(
-            "this.run.markers[9] === PERSISTENT_COOKIE_SQLITE_ROW_READBACK_OK_MARKER",
+            "this.run.markers[10] === PERSISTENT_COOKIE_SQLITE_ROW_READBACK_OK_MARKER",
             source,
         )
         self.assertIn(
-            "this.run.markers[10] === PERSISTENT_COOKIE_STORE_CLOSED_MARKER",
+            "this.run.markers[11] === PERSISTENT_COOKIE_STORE_CLOSED_MARKER",
             source,
         )
         self.assertIn(
-            "this.run.markers[11] === PARTITION_CREATION_SEALED_MARKER", source
+            "this.run.markers[12] === PARTITION_CREATION_SEALED_MARKER", source
         )
         self.assertIn(
-            "this.run.markers[13] === PARTITION_DESTROY_NOTIFICATION_DISPATCHED_MARKER",
+            "this.run.markers[14] === PARTITION_DESTROY_NOTIFICATION_DISPATCHED_MARKER",
             source,
         )
         self.assertIn(
-            "this.run.markers[14] === PARTITION_MAP_DROPPED_MARKER", source
+            "this.run.markers[15] === PARTITION_MAP_DROPPED_MARKER", source
         )
         self.assertIn(
-            "this.run.markers[15] === PREFERENCES_FENCE_OK_MARKER", source
+            "this.run.markers[16] === PREFERENCES_FENCE_OK_MARKER", source
         )
         self.assertIn(
-            "this.run.markers[16] === SEALED_LEASE_RETAINED_MARKER", source
+            "this.run.markers[17] === SEALED_LEASE_RETAINED_MARKER", source
         )
         self.assertIn(
-            "this.run.markers[17] === FAIL_CLOSED_RETIREMENT_MARKER", source
+            "this.run.markers[18] === FAIL_CLOSED_RETIREMENT_MARKER", source
         )
         self.assertIn(
-            "stderr-only-fixed-selected-local-storage-renderer-indexed-db-cache-api-context-and-cookie-shutdown-grammar",
+            "stderr-only-fixed-profile-directory-fsync-selected-local-storage-renderer-indexed-db-cache-api-context-and-cookie-shutdown-grammar",
             source,
         )
 
@@ -439,7 +452,7 @@ class M7PersistentDefaultPartitionShutdownProbeHostTest(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_host_accepts_the_exact_eighteen_marker_selected_owner_shutdown_receipt(
+    def test_host_accepts_the_exact_nineteen_marker_selected_owner_shutdown_receipt(
         self,
     ) -> None:
         self.run_scenario("resolved")
@@ -454,6 +467,9 @@ class M7PersistentDefaultPartitionShutdownProbeHostTest(unittest.TestCase):
         self,
     ) -> None:
         self.run_scenario("missing-local-storage-map-update-close")
+
+    def test_host_rejects_a_missing_profile_directory_fsync_receipt(self) -> None:
+        self.run_scenario("missing-profile-directory-fsync")
 
     def test_host_rejects_a_missing_renderer_config_reuse_receipt(self) -> None:
         self.run_scenario("missing-renderer-config-reuse")

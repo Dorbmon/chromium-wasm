@@ -9,8 +9,10 @@
 #include <emscripten/wasmfs_opfs_profile_drain.h>
 
 #include <cerrno>
+#include <fcntl.h>
 #include <memory>
 #include <optional>
+#include <unistd.h>
 #include <utility>
 
 #include "base/check.h"
@@ -44,6 +46,26 @@ constexpr char kProfileDefaultPath[] = "/profile/Default";
 
 int NegativeErrnoOrEio() {
   return errno == 0 ? -EIO : -errno;
+}
+
+bool SyncDirectoryPath(const char* path) {
+  if (!path) {
+    return false;
+  }
+
+  errno = 0;
+  const int directory = open(path, O_RDONLY | O_DIRECTORY);
+  if (directory < 0) {
+    return false;
+  }
+
+  const bool flushed = fsync(directory) == 0;
+  const int saved_errno = errno;
+  const bool closed = close(directory) == 0;
+  if (!flushed) {
+    errno = saved_errno;
+  }
+  return flushed && closed;
 }
 
 enum class ProfileStorageMount {
@@ -158,6 +180,18 @@ class WasmProfileStorageState {
       return false;
     }
 
+    // The V4 backend commits complete namespace generations, but Chrome must
+    // still verify the POSIX directory-sync boundary at the integration seam.
+    // Do this before exposing the mount to Profile/StoragePartition startup so
+    // a backend that reports ENOTSUP cannot be mistaken for durable profile
+    // storage.
+    if (!SyncDirectoryPath(mount_path)) {
+      initialization_error_ = NegativeErrnoOrEio();
+      state_ = State::kMountFailed;
+      return false;
+    }
+    directory_sync_proven_ = true;
+
     mount_ = mount;
     state_ = State::kMounted;
     return true;
@@ -166,6 +200,38 @@ class WasmProfileStorageState {
   bool IsMounted() {
     base::AutoLock lock(lock_);
     return state_ == State::kMounted && !backend_drain_attempted_;
+  }
+
+  bool SyncDirectory() {
+    base::AutoLock lock(lock_);
+    if (state_ != State::kMounted || backend_drain_attempted_) {
+      return false;
+    }
+
+    const char* path = kProfileRootPath;
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+    if (mount_ == ProfileStorageMount::kDefaultProfile) {
+      path = kProfileDefaultPath;
+    }
+#endif
+    if (!SyncDirectoryPath(path)) {
+      return false;
+    }
+    directory_sync_proven_ = true;
+    return true;
+  }
+
+  bool DirectorySyncProven() {
+    base::AutoLock lock(lock_);
+    return directory_sync_proven_;
   }
 
   bool NeedsBackendDrain() {
@@ -597,6 +663,7 @@ class WasmProfileStorageState {
       ProfileStorageMount::kProfileRoot;
   int initialization_error_ GUARDED_BY(lock_) = 0;
   backend_t backend_ GUARDED_BY(lock_) = nullptr;
+  bool directory_sync_proven_ GUARDED_BY(lock_) = false;
   bool profile_construction_started_ GUARDED_BY(lock_) = false;
   bool profile_created_ GUARDED_BY(lock_) = false;
   bool profile_shutdown_ GUARDED_BY(lock_) = false;
@@ -647,6 +714,14 @@ bool InitializeWasmProfilePreferencesStorage() {
 
 bool IsWasmProfileStorageMounted() {
   return GetWasmProfileStorageState().IsMounted();
+}
+
+bool SyncWasmProfileStorageDirectory() {
+  return GetWasmProfileStorageState().SyncDirectory();
+}
+
+bool WasmProfileStorageDirectorySyncProven() {
+  return GetWasmProfileStorageState().DirectorySyncProven();
 }
 
 bool NeedsWasmProfileStorageBackendDrain() {

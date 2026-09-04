@@ -68,6 +68,7 @@ def passing_result(
         "exactEmptyProbeSwitchPassed": True,
         "freshSourceSelectedShutdownArtifactProven": True,
         "actualPersistentDefaultPartitionCreatedProven": True,
+        "profileDirectoryFsyncProven": True,
         "persistentDefaultPartitionLocalStorageMapUpdateAndCloseReceiptProven": True,
         "persistentDefaultPartitionRendererConfigReuseWitnessProven": True,
         "persistentDefaultPartitionIndexedDBRendererWriteAndCloseReceiptProven": True,
@@ -109,8 +110,9 @@ def passing_result(
             "markerCount": len(smoke.EXPECTED_MARKERS),
             "markerSequenceAccepted": True,
             "markerSource": (
-                "stderr-only-fixed-selected-local-storage-renderer-indexed-db-"
-                "cache-api-context-and-cookie-shutdown-grammar"
+                "stderr-only-fixed-profile-directory-fsync-selected-local-"
+                "storage-renderer-indexed-db-cache-api-context-and-cookie-"
+                "shutdown-grammar"
             ),
             "markers": list(smoke.EXPECTED_MARKERS),
             "noFailMarkerObserved": True,
@@ -216,6 +218,7 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
             smoke.EXPECTED_MARKERS,
             (
                 smoke.M7_SHUTDOWN_MARKER_PREFIX + "DEFAULT_PARTITION_CREATED",
+                smoke.M7_SHUTDOWN_MARKER_PREFIX + "PROFILE_DIRECTORY_FSYNC_OK",
                 smoke.M7_SHUTDOWN_MARKER_PREFIX
                 + "PERSISTENT_LOCAL_STORAGE_ON_DISK_MAP_UPDATE_AND_CLOSE_OK",
                 smoke.M7_SHUTDOWN_MARKER_PREFIX
@@ -275,6 +278,7 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
             validate(missing_notification)
 
         for field in (
+            "profileDirectoryFsyncProven",
             "persistentDefaultPartitionLocalStorageMapUpdateAndCloseReceiptProven",
             "persistentDefaultPartitionRendererConfigReuseWitnessProven",
             "persistentDefaultPartitionIndexedDBRendererWriteAndCloseReceiptProven",
@@ -297,7 +301,7 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
         assert isinstance(run, dict)
         markers = run["markers"]
         assert isinstance(markers, list)
-        markers.pop(7)
+        markers.pop(8)
         run["markerCount"] = len(markers)
         with self.assertRaises(M0Error):
             validate(missing_cookie_marker)
@@ -307,7 +311,7 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
         assert isinstance(run, dict)
         markers = run["markers"]
         assert isinstance(markers, list)
-        markers.pop(1)
+        markers.pop(2)
         run["markerCount"] = len(markers)
         with self.assertRaises(M0Error):
             validate(missing_local_storage_marker)
@@ -317,7 +321,7 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
         assert isinstance(run, dict)
         markers = run["markers"]
         assert isinstance(markers, list)
-        markers.pop(2)
+        markers.pop(3)
         run["markerCount"] = len(markers)
         with self.assertRaises(M0Error):
             validate(missing_renderer_config_reuse_marker)
@@ -327,7 +331,7 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
         assert isinstance(run, dict)
         markers = run["markers"]
         assert isinstance(markers, list)
-        markers.pop(3)
+        markers.pop(4)
         run["markerCount"] = len(markers)
         with self.assertRaises(M0Error):
             validate(missing_indexed_db_marker)
@@ -337,7 +341,7 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
         assert isinstance(run, dict)
         markers = run["markers"]
         assert isinstance(markers, list)
-        markers.pop(6)
+        markers.pop(7)
         run["markerCount"] = len(markers)
         with self.assertRaises(M0Error):
             validate(missing_indexed_db_context_marker)
@@ -347,7 +351,7 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
         assert isinstance(run, dict)
         markers = run["markers"]
         assert isinstance(markers, list)
-        markers.pop(5)
+        markers.pop(6)
         run["markerCount"] = len(markers)
         with self.assertRaises(M0Error):
             validate(missing_cache_api_backend_close_marker)
@@ -357,7 +361,7 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
         assert isinstance(run, dict)
         markers = run["markers"]
         assert isinstance(markers, list)
-        markers.pop(4)
+        markers.pop(5)
         run["markerCount"] = len(markers)
         with self.assertRaises(M0Error):
             validate(missing_cache_api_marker)

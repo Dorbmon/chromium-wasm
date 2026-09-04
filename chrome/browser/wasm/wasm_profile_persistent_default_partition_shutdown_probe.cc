@@ -273,7 +273,19 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
       return false;
     }
     owner_receipts_completion_ = std::move(on_selected_owner_receipts_closed);
+    // The profile mount was checked during initialization, but the shutdown
+    // probe must carry an explicit receipt from the same live leased mount.
+    // A successful file/owner operation cannot hide an ENOTSUP namespace-sync
+    // boundary at the Chrome handoff seam.
+    if (!SyncWasmProfileStorageDirectory() ||
+        !WasmProfileStorageDirectorySyncProven()) {
+      ReportFailure(
+          WasmPersistentDefaultPartitionShutdownProbeFailureStage::kStorage);
+      return false;
+    }
+    profile_directory_sync_acknowledged_ = true;
     EmitMarker("DEFAULT_PARTITION_CREATED");
+    EmitMarker("PROFILE_DIRECTORY_FSYNC_OK");
 
     // The first selected owner is a direct LocalStorage participant. Its
     // close-fence API accepts only an on-disk LevelDB commit followed by the
@@ -748,6 +760,7 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
 
   bool CanUseFailureRetirement() const {
     return enabled_ && partition_created_ && creation_sealed_ &&
+           profile_directory_sync_acknowledged_ &&
            HasSelectedOwnerReceiptWitness() &&
            IsWasmPersistentDefaultPartitionShutdownNotificationWitness(
                notification_armed_, notification_dispatched_,
@@ -1176,6 +1189,7 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
   PolicyQueryPhase policy_query_phase_ = PolicyQueryPhase::kNone;
   int policy_query_count_ = 0;
   bool partition_created_ = false;
+  bool profile_directory_sync_acknowledged_ = false;
   bool local_storage_receipt_started_ = false;
   bool local_storage_receipt_completed_ = false;
   bool local_storage_on_disk_commit_and_close_acknowledged_ = false;

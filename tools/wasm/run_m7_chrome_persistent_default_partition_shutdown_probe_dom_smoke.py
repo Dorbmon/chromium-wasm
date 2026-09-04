@@ -12,6 +12,7 @@ starts one isolated host document with exactly this native argument:
   --wasm-persistent-default-partition-shutdown-probe=
 
 The host accepts only the fixed stderr sequence ``DEFAULT_PARTITION_CREATED``,
+``PROFILE_DIRECTORY_FSYNC_OK``,
 ``PERSISTENT_LOCAL_STORAGE_ON_DISK_MAP_UPDATE_AND_CLOSE_OK``,
 ``RENDERER_DEFAULT_PARTITION_CONFIG_REUSE_WITNESS_OK``,
 ``PERSISTENT_INDEXED_DB_RENDERER_WRITE_AND_CLOSE_OK``,
@@ -118,6 +119,7 @@ SEALED_LEASE_RETAINED_MARKER = M7_FAILURE_RETIREMENT_PREFIX + "SEALED_LEASE_RETA
 LEASE_RELEASED_MARKER = M7_FAILURE_RETIREMENT_PREFIX + "LEASE_RELEASED"
 EXPECTED_MARKERS = (
     M7_SHUTDOWN_MARKER_PREFIX + "DEFAULT_PARTITION_CREATED",
+    M7_SHUTDOWN_MARKER_PREFIX + "PROFILE_DIRECTORY_FSYNC_OK",
     M7_SHUTDOWN_MARKER_PREFIX
     + "PERSISTENT_LOCAL_STORAGE_ON_DISK_MAP_UPDATE_AND_CLOSE_OK",
     M7_SHUTDOWN_MARKER_PREFIX
@@ -286,6 +288,7 @@ _RESULT_FIELDS = frozenset(
         "persistentDefaultPartitionLocalStorageMapUpdateAndCloseReceiptProven",
         "persistentDefaultPartitionRendererConfigReuseWitnessProven",
         "preferencesFenceProven",
+        "profileDirectoryFsyncProven",
         "profilePersistenceProven",
         "profileStorageLeaseReleasedProven",
         "protocol",
@@ -793,7 +796,7 @@ def _validate_run(value: object) -> None:
         or run.get("markerCount") != len(EXPECTED_MARKERS)
         or run.get("markerSequenceAccepted") is not True
         or run.get("markerSource")
-        != "stderr-only-fixed-selected-local-storage-renderer-indexed-db-cache-api-context-and-cookie-shutdown-grammar"
+        != "stderr-only-fixed-profile-directory-fsync-selected-local-storage-renderer-indexed-db-cache-api-context-and-cookie-shutdown-grammar"
         or run.get("markers") != list(EXPECTED_MARKERS)
         or run.get("noFailMarkerObserved") is not True
         or run.get("nonzeroProcessExitAndAckReceived") is not True
@@ -881,6 +884,7 @@ def validate_result(
         "exactEmptyProbeSwitchPassed": True,
         "freshSourceSelectedShutdownArtifactProven": True,
         "actualPersistentDefaultPartitionCreatedProven": True,
+        "profileDirectoryFsyncProven": True,
         "persistentDefaultPartitionLocalStorageMapUpdateAndCloseReceiptProven": True,
         "persistentDefaultPartitionRendererConfigReuseWitnessProven": True,
         "persistentDefaultPartitionIndexedDBRendererWriteAndCloseReceiptProven": True,
@@ -1008,6 +1012,7 @@ def wait_for_result(
 def shutdown_probe_summary() -> dict[str, object]:
     return {
         "actualPersistentDefaultPartitionCreatedProven": True,
+        "profileDirectoryFsyncProven": True,
         "aggregatePartitionCloseProven": False,
         "creationSealProven": True,
         "partitionDestroyNotificationDispatchedProven": True,

@@ -3,7 +3,9 @@
 // found in the LICENSE file.
 
 // A one-document shutdown probe. Chromium constructs the real persistent
-// default StoragePartition, receives one direct LocalStorage map-update/close
+// default StoragePartition, acknowledges a result-bearing fsync for the exact
+// leased profile directory, then receives one direct LocalStorage
+// map-update/close
 // receipt, one captured-config renderer IndexedDB write/selected-bucket-close
 // receipt plus a separate Cache API write/readback operation and exact
 // selected-cache-backend close/index-replacement receipt in that renderer
@@ -40,6 +42,8 @@ const SHUTDOWN_FAIL_PREFIX = SHUTDOWN_MARKER_PREFIX + "FAIL stage=";
 const FAILURE_RETIREMENT_PREFIX = "CHROMIUM_WASM_M7_PROFILE_FAILURE_RETIREMENT:";
 const DEFAULT_PARTITION_CREATED_MARKER =
     SHUTDOWN_MARKER_PREFIX + "DEFAULT_PARTITION_CREATED";
+const PROFILE_DIRECTORY_FSYNC_OK_MARKER =
+    SHUTDOWN_MARKER_PREFIX + "PROFILE_DIRECTORY_FSYNC_OK";
 const PERSISTENT_LOCAL_STORAGE_ON_DISK_MAP_UPDATE_AND_CLOSE_OK_MARKER =
     SHUTDOWN_MARKER_PREFIX +
     "PERSISTENT_LOCAL_STORAGE_ON_DISK_MAP_UPDATE_AND_CLOSE_OK";
@@ -82,6 +86,7 @@ const FAIL_CLOSED_RETIREMENT_MARKER =
     SHUTDOWN_MARKER_PREFIX + "FAIL_CLOSED_RETIREMENT";
 const EXPECTED_MARKERS = Object.freeze([
   DEFAULT_PARTITION_CREATED_MARKER,
+  PROFILE_DIRECTORY_FSYNC_OK_MARKER,
   PERSISTENT_LOCAL_STORAGE_ON_DISK_MAP_UPDATE_AND_CLOSE_OK_MARKER,
   RENDERER_DEFAULT_PARTITION_CONFIG_REUSE_WITNESS_OK_MARKER,
   PERSISTENT_INDEXED_DB_RENDERER_WRITE_AND_CLOSE_OK_MARKER,
@@ -127,7 +132,8 @@ const RESULT_FIELDS = Object.freeze([
   "persistentDefaultPartitionLocalStorageMapUpdateAndCloseReceiptProven",
   "persistentDefaultPartitionRendererConfigReuseWitnessProven",
   "preferencesFenceProven",
-  "profilePersistenceProven", "profileStorageLeaseReleasedProven", "protocol",
+  "profileDirectoryFsyncProven", "profilePersistenceProven",
+  "profileStorageLeaseReleasedProven", "protocol",
   "quiescence", "run", "scope", "sealedLeaseRetainedReceiptProven",
   "sharedArrayBuffer", "status", "structuralShutdownWitnessProven", "versions",
   "origin",
@@ -712,59 +718,62 @@ class PersistentDefaultPartitionShutdownProbeHost {
       actualPersistentDefaultPartitionCreatedProven:
           lifecycleComplete &&
           this.run.markers[0] === DEFAULT_PARTITION_CREATED_MARKER,
+      profileDirectoryFsyncProven:
+          lifecycleComplete &&
+          this.run.markers[1] === PROFILE_DIRECTORY_FSYNC_OK_MARKER,
       persistentDefaultPartitionLocalStorageMapUpdateAndCloseReceiptProven:
           lifecycleComplete &&
-          this.run.markers[1] ===
+          this.run.markers[2] ===
               PERSISTENT_LOCAL_STORAGE_ON_DISK_MAP_UPDATE_AND_CLOSE_OK_MARKER,
       persistentDefaultPartitionRendererConfigReuseWitnessProven:
           lifecycleComplete &&
-          this.run.markers[2] ===
+          this.run.markers[3] ===
               RENDERER_DEFAULT_PARTITION_CONFIG_REUSE_WITNESS_OK_MARKER,
       persistentDefaultPartitionIndexedDBRendererWriteAndCloseReceiptProven:
           lifecycleComplete &&
-          this.run.markers[3] ===
+          this.run.markers[4] ===
               PERSISTENT_INDEXED_DB_RENDERER_WRITE_AND_CLOSE_OK_MARKER,
       persistentDefaultPartitionCacheAPIWriteAndReadbackReceiptProven:
           lifecycleComplete &&
-          this.run.markers[4] ===
+          this.run.markers[5] ===
               PERSISTENT_CACHE_API_RENDERER_WRITE_AND_READBACK_OK_MARKER,
       persistentDefaultPartitionCacheAPISelectedBackendCloseAndIndexReplacementReceiptProven:
           lifecycleComplete &&
-          this.run.markers[5] ===
+          this.run.markers[6] ===
               PERSISTENT_CACHE_API_SELECTED_BACKEND_CLOSE_AND_INDEX_REPLACED_OK_MARKER,
       persistentDefaultPartitionIndexedDBContextCloseReceiptProven:
           lifecycleComplete &&
-          this.run.markers[6] === PERSISTENT_INDEXED_DB_CONTEXT_CLOSED_MARKER,
+          this.run.markers[7] === PERSISTENT_INDEXED_DB_CONTEXT_CLOSED_MARKER,
       persistentDefaultPartitionCookieWriteAcceptedProven:
           lifecycleComplete &&
-          this.run.markers[7] === PERSISTENT_COOKIE_WRITE_ACCEPTED_MARKER,
+          this.run.markers[8] === PERSISTENT_COOKIE_WRITE_ACCEPTED_MARKER,
       persistentDefaultPartitionCookieStoreFlushAcknowledgedProven:
           lifecycleComplete &&
-          this.run.markers[8] ===
+          this.run.markers[9] ===
               PERSISTENT_COOKIE_STORE_FLUSH_ACKNOWLEDGED_MARKER,
       persistentDefaultPartitionCookieSQLiteRowReadbackProven:
           lifecycleComplete &&
-          this.run.markers[9] === PERSISTENT_COOKIE_SQLITE_ROW_READBACK_OK_MARKER,
+          this.run.markers[10] === PERSISTENT_COOKIE_SQLITE_ROW_READBACK_OK_MARKER,
       persistentDefaultPartitionCookieStoreCloseReceiptProven:
           lifecycleComplete &&
-          this.run.markers[10] === PERSISTENT_COOKIE_STORE_CLOSED_MARKER,
+          this.run.markers[11] === PERSISTENT_COOKIE_STORE_CLOSED_MARKER,
       creationSealProven:
           lifecycleComplete &&
-          this.run.markers[11] === PARTITION_CREATION_SEALED_MARKER,
+          this.run.markers[12] === PARTITION_CREATION_SEALED_MARKER,
       partitionDestroyNotificationDispatchedProven:
           lifecycleComplete &&
-          this.run.markers[13] === PARTITION_DESTROY_NOTIFICATION_DISPATCHED_MARKER,
+          this.run.markers[14] === PARTITION_DESTROY_NOTIFICATION_DISPATCHED_MARKER,
       partitionMapDroppedProven:
           lifecycleComplete &&
-          this.run.markers[14] === PARTITION_MAP_DROPPED_MARKER,
+          this.run.markers[15] === PARTITION_MAP_DROPPED_MARKER,
       preferencesFenceProven:
-          lifecycleComplete && this.run.markers[15] === PREFERENCES_FENCE_OK_MARKER,
+          lifecycleComplete && this.run.markers[16] === PREFERENCES_FENCE_OK_MARKER,
       sealedLeaseRetainedReceiptProven:
           lifecycleComplete &&
-          this.run.markers[16] === SEALED_LEASE_RETAINED_MARKER,
+          this.run.markers[17] === SEALED_LEASE_RETAINED_MARKER,
       failClosedRetirementProven:
           lifecycleComplete &&
-          this.run.markers[17] === FAIL_CLOSED_RETIREMENT_MARKER,
+          this.run.markers[18] === FAIL_CLOSED_RETIREMENT_MARKER,
       structuralShutdownWitnessProven: lifecycleComplete,
       nonzeroProcessExitAndAckProven: lifecycleComplete,
       aggregatePartitionCloseProven: false,
@@ -790,7 +799,7 @@ class PersistentDefaultPartitionShutdownProbeHost {
         markerCount: this.run.markers.length,
         markerSequenceAccepted: this.run.markerSequenceAccepted,
         markerSource:
-            "stderr-only-fixed-selected-local-storage-renderer-indexed-db-cache-api-context-and-cookie-shutdown-grammar",
+            "stderr-only-fixed-profile-directory-fsync-selected-local-storage-renderer-indexed-db-cache-api-context-and-cookie-shutdown-grammar",
         markers: this.run.markers.slice(),
         noFailMarkerObserved: this.run.noFailMarkerObserved,
         nonzeroProcessExitAndAckReceived: lifecycleComplete,
@@ -926,6 +935,7 @@ export function validateChromeWasmPersistentDefaultPartitionShutdownProbeResult(
       result.exactEmptyProbeSwitchPassed !== true ||
       result.freshSourceSelectedShutdownArtifactProven !== true ||
       result.actualPersistentDefaultPartitionCreatedProven !== true ||
+      result.profileDirectoryFsyncProven !== true ||
       result.persistentDefaultPartitionLocalStorageMapUpdateAndCloseReceiptProven !==
           true ||
       result.persistentDefaultPartitionRendererConfigReuseWitnessProven !==
@@ -997,7 +1007,7 @@ export function validateChromeWasmPersistentDefaultPartitionShutdownProbeResult(
       run.markerCount !== EXPECTED_MARKERS.length ||
       run.markerSequenceAccepted !== true ||
       run.markerSource !==
-          "stderr-only-fixed-selected-local-storage-renderer-indexed-db-cache-api-context-and-cookie-shutdown-grammar" ||
+          "stderr-only-fixed-profile-directory-fsync-selected-local-storage-renderer-indexed-db-cache-api-context-and-cookie-shutdown-grammar" ||
       JSON.stringify(run.markers) !== JSON.stringify(EXPECTED_MARKERS) ||
       run.noFailMarkerObserved !== true ||
       run.nonzeroProcessExitAndAckReceived !== true || run.onExitCount !== 1 ||
