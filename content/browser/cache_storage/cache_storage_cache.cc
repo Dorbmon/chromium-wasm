@@ -965,6 +965,26 @@ void CacheStorageCache::Close(base::OnceClosure callback) {
           scheduler_->WrapCallbackToRunNext(id, std::move(callback))));
 }
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+void CacheStorageCache::CloseAndReportResultForWasmTest(
+    base::OnceCallback<void(bool)> callback) {
+  // Do not initialize a backend just to manufacture a close receipt.
+  if (backend_state_ != BACKEND_OPEN) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  auto id = scheduler_->CreateId();
+  scheduler_->ScheduleOperation(
+      id, CacheStorageSchedulerMode::kExclusive,
+      CacheStorageSchedulerOp::kClose, CacheStorageSchedulerPriority::kNormal,
+      base::BindOnce(
+          &CacheStorageCache::CloseAndReportResultForWasmTestImpl,
+          weak_ptr_factory_.GetWeakPtr(),
+          scheduler_->WrapCallbackToRunNext(id, std::move(callback))));
+}
+#endif
+
 void CacheStorageCache::Size(SizeCallback callback) {
   if (backend_state_ == BACKEND_CLOSED) {
     // TODO(jkarlin): Delete caches that can't be initialized.
@@ -2421,6 +2441,22 @@ void CacheStorageCache::CloseImpl(base::OnceClosure callback) {
   backend_.reset();
   post_backend_closed_callback_ = std::move(callback);
 }
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+void CacheStorageCache::CloseAndReportResultForWasmTestImpl(
+    base::OnceCallback<void(bool)> callback) {
+  DCHECK(scheduler_->IsRunningExclusiveOperation());
+
+  // Another close may have completed while this operation waited in the
+  // scheduler. Report that honestly instead of tripping CloseImpl's contract.
+  if (backend_state_ != BACKEND_OPEN) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  CloseImpl(base::BindOnce(std::move(callback), true));
+}
+#endif
 
 void CacheStorageCache::DeleteBackendCompletedIO() {
   if (!post_backend_closed_callback_.is_null()) {

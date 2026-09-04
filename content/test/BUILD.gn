@@ -7,6 +7,7 @@ import("//build/config/chrome_build.gni")
 import("//build/config/compiler/compiler.gni")
 import("//build/config/features.gni")
 import("//build/config/ui.gni")
+import("//build/config/wasm.gni")
 import("//build/nocompile.gni")
 import("//components/guest_view/buildflags/buildflags.gni")
 import("//components/viz/common/debugger/viz_debugger.gni")
@@ -87,6 +88,82 @@ if (is_wasm) {
       "//content/browser:for_content_tests",
       "//content/public/browser",
     ]
+  }
+
+  if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
+    # This source-selected target keeps CacheStorageCache's private test
+    # fixture behind //content/test's existing test-only visibility. It does
+    # not make the probe-only close receipt available to ordinary Content.
+    config("wasm_m7_cache_storage_close_receipt") {
+      defines = [
+        "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1",
+      ]
+    }
+
+    source_set("wasm_cache_storage_close_receipt_test_support") {
+      testonly = true
+
+      sources = [
+        "../public/test/test_browser_context.cc",
+        "../public/test/test_browser_context.h",
+        "../public/test/test_utils.cc",
+        "../public/test/test_utils.h",
+        "mock_background_sync_controller.cc",
+        "mock_background_sync_controller.h",
+        "mock_reduce_accept_language_controller_delegate.cc",
+        "mock_reduce_accept_language_controller_delegate.h",
+        "mock_ssl_host_state_delegate.cc",
+        "mock_ssl_host_state_delegate.h",
+      ]
+
+      deps = [
+        "//base",
+        "//base/test:test_support",
+        "//content/browser:for_content_tests",
+        "//content/public/browser",
+        "//content/public/common",
+        "//net",
+        "//storage/browser",
+        "//testing/gtest",
+        "//third_party/blink/public/common",
+        "//url",
+      ]
+    }
+
+    source_set("wasm_cache_storage_close_receipt_unittests") {
+      testonly = true
+
+      sources = [ "../browser/cache_storage/cache_storage_cache_unittest.cc" ]
+
+      configs += [
+        ":wasm_m7_cache_storage_close_receipt",
+        # Matches content_unittests, whose upstream fixture intentionally owns
+        # static test data.
+        "//build/config/compiler:no_exit_time_destructors",
+      ]
+
+      deps = [
+        ":wasm_cache_storage_close_receipt_test_support",
+        ":wasm_browser_task_environment_test_support",
+        "//base",
+        "//base/test:test_support",
+        "//components/services/storage",
+        "//components/services/storage/public/cpp",
+        "//components/services/storage/public/mojom",
+        "//content/browser:for_content_tests",
+        "//content/public/browser",
+        "//crypto",
+        "//mojo/core/embedder",
+        "//mojo/public/cpp/bindings",
+        "//net",
+        "//net:test_support",
+        "//storage/browser",
+        "//storage/browser:test_support",
+        "//testing/gmock",
+        "//testing/gtest",
+        "//third_party/blink/public/common",
+      ]
+    }
   }
 }
 

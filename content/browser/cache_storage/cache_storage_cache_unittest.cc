@@ -51,6 +51,7 @@
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_browser_context.h"
 #include "content/public/test/test_utils.h"
+#include "mojo/core/embedder/embedder.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "mojo/public/cpp/system/data_pipe.h"
@@ -91,6 +92,26 @@ void SizeCallback(base::RunLoop* run_loop,
   if (run_loop)
     run_loop->Quit();
 }
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+void InitializeMojoCoreForCacheStorageCacheWasmTests() {
+  static const bool initialized = [] {
+    mojo::core::Init();
+    return true;
+  }();
+  static_cast<void>(initialized);
+}
+
+void BoolCallback(base::RunLoop* run_loop,
+                  bool* callback_called,
+                  bool* out_result,
+                  bool result) {
+  *callback_called = true;
+  *out_result = result;
+  if (run_loop)
+    run_loop->Quit();
+}
+#endif
 
 // A blob that never finishes writing to its pipe.
 class SlowBlob : public storage::FakeBlob {
@@ -544,6 +565,9 @@ class CacheStorageCacheTest : public testing::Test {
       : task_environment_(BrowserTaskEnvironment::IO_MAINLOOP) {}
 
   void SetUp() override {
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+    InitializeMojoCoreForCacheStorageCacheWasmTests();
+#endif
     ChromeBlobStorageContext* blob_storage_context =
         ChromeBlobStorageContext::GetFor(&browser_context_);
     // Wait for chrome_blob_storage_context to finish initializing.
@@ -867,6 +891,22 @@ class CacheStorageCacheTest : public testing::Test {
       CheckOpHistograms(histogram_tester, "Close");
     return callback_closed_;
   }
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  bool CloseAndReportResultForWasmTest() {
+    base::HistogramTester histogram_tester;
+    base::RunLoop run_loop;
+    bool callback_called = false;
+    bool result = false;
+    cache_->CloseAndReportResultForWasmTest(
+        base::BindOnce(&BoolCallback, &run_loop, &callback_called, &result));
+    run_loop.Run();
+    EXPECT_TRUE(callback_called);
+    if (result)
+      CheckOpHistograms(histogram_tester, "Close");
+    return result;
+  }
+#endif
 
   bool WriteSideData(const GURL& url,
                      base::Time expected_response_time,
@@ -2389,6 +2429,31 @@ TEST_P(CacheStorageCacheTestP, OpsFailOnClosedBackend) {
   VerifyAllOpsFail();
 }
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+TEST_P(CacheStorageCacheTestP,
+       CloseAndReportResultForWasmTestDoesNotInitializeUnopenedBackend) {
+  ASSERT_OK_AND_ASSIGN(auto bucket_locator,
+                       GetOrCreateDefaultBucket(kTestUrl));
+  auto unopened_cache = std::make_unique<TestCacheStorageCache>(
+      bucket_locator, kCacheName, temp_dir_path_, mock_cache_storage_.get(),
+      quota_manager_proxy_, blob_storage_context_);
+
+  base::test::TestFuture<bool> close_result;
+  unopened_cache->CloseAndReportResultForWasmTest(
+      close_result.GetCallback());
+  EXPECT_FALSE(close_result.Get());
+}
+
+TEST_P(CacheStorageCacheTestP, CloseAndReportResultForWasmTest) {
+  EXPECT_TRUE(Put(body_request_, CreateBlobBodyResponse()));
+  EXPECT_TRUE(CloseAndReportResultForWasmTest());
+  VerifyAllOpsFail();
+
+  // A backend that is already closed cannot produce another close receipt.
+  EXPECT_FALSE(CloseAndReportResultForWasmTest());
+}
+#endif
+
 // Shutdown the cache in the middle of its writing the response body. Upon
 // restarting, that response shouldn't be available. See crbug.com/617683.
 TEST_P(CacheStorageCacheTestP, UnfinishedPutsShouldNotBeReusable) {
@@ -2457,6 +2522,44 @@ TEST_P(CacheStorageCacheTestP, BlobReferenceDelaysClose) {
   loop.Run();
   EXPECT_TRUE(callback_closed_);
 }
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+TEST_P(CacheStorageCacheTestP,
+       BlobReferenceDelaysResultBearingCloseForWasmTest) {
+  // Create the backend and put something in it.
+  EXPECT_TRUE(Put(body_request_, CreateBlobBodyResponse()));
+  // Get a reference to the response in the cache.
+  EXPECT_TRUE(Match(body_request_));
+  mojo::Remote<blink::mojom::Blob> blob(
+      std::move(callback_response_->blob->blob));
+  callback_response_ = nullptr;
+
+  base::RunLoop loop;
+  bool callback_called = false;
+  bool callback_result = false;
+  cache_->CloseAndReportResultForWasmTest(base::BindOnce(
+      &BoolCallback, &loop, &callback_called, &callback_result));
+
+  // Queue a second close while the first one awaits backend destruction. It
+  // must fail after the first operation's receipt instead of DCHECKing.
+  base::test::TestFuture<bool> second_close_result;
+  cache_->CloseAndReportResultForWasmTest(second_close_result.GetCallback());
+  task_environment_.RunUntilIdle();
+  // If MemoryOnly closing does succeed right away.
+  EXPECT_EQ(MemoryOnly(), callback_called);
+  if (callback_called)
+    EXPECT_TRUE(callback_result);
+
+  // Reading blob should succeed.
+  EXPECT_EQ(expected_blob_data_, storage::BlobToString(blob.get()));
+  blob.reset();
+
+  loop.Run();
+  EXPECT_TRUE(callback_called);
+  EXPECT_TRUE(callback_result);
+  EXPECT_FALSE(second_close_result.Get());
+}
+#endif
 
 TEST_P(CacheStorageCacheTestP, VerifySerialScheduling) {
   // Start two operations, the first one is delayed but the second isn't. The

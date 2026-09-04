@@ -185,6 +185,19 @@ class CONTENT_EXPORT CacheStorageCache {
   // will exit early. Close should only be called once per CacheStorageCache.
   void Close(base::OnceClosure callback);
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // Closes an already-open backend for the source-selected Wasm profile
+  // storage probe. The callback receives true only after the backend deletion
+  // completion callback runs. It receives false without scheduling a close if
+  // the backend is not already open, and can also receive false if an earlier
+  // close completes before this queued operation starts.
+  //
+  // This does not flush the CacheStorage index or establish CacheStorage-wide
+  // quiescence or profile durability.
+  void CloseAndReportResultForWasmTest(
+      base::OnceCallback<void(bool)> callback);
+#endif
+
   // The size of the cache's contents.  The callback reports the padded
   // size.  If you want the unpadded size you may call the cache_size()
   // getter method on the cache object when the callback is invoked; the
@@ -515,6 +528,10 @@ class CONTENT_EXPORT CacheStorageCache {
       std::unique_ptr<QueryCacheResults> query_cache_results);
 
   void CloseImpl(base::OnceClosure callback);
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  void CloseAndReportResultForWasmTestImpl(
+      base::OnceCallback<void(bool)> callback);
+#endif
 
   void SizeImpl(SizeCallback callback);
 
