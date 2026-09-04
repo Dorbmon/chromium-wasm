@@ -57,6 +57,8 @@ bool IsWasmProfileRendererIndexedDBRootURL(const GURL& url) {
   const std::string_view query = url.query();
   constexpr std::string_view kWritePrefix =
       "mode=renderer-write&token-a=";
+  constexpr std::string_view kCacheAPIWriteReadbackSuffix =
+      "&cache-api=write-readback";
   constexpr std::string_view kVerifyAWriteBPrefix =
       "mode=renderer-verify-a-write-b&token-a=";
   constexpr std::string_view kVerifyAWriteBSeparator = "&token-b=";
@@ -64,8 +66,12 @@ bool IsWasmProfileRendererIndexedDBRootURL(const GURL& url) {
       "mode=renderer-verify-b&token-b=";
 
   if (query.starts_with(kWritePrefix)) {
-    return IsWasmProfileRendererIndexedDBToken(
-        query.substr(kWritePrefix.size()));
+    std::string_view token = query.substr(kWritePrefix.size());
+    if (token.ends_with(kCacheAPIWriteReadbackSuffix)) {
+      token = token.substr(
+          0, token.size() - kCacheAPIWriteReadbackSuffix.size());
+    }
+    return IsWasmProfileRendererIndexedDBToken(token);
   }
   if (query.starts_with(kVerifyBPrefix)) {
     return IsWasmProfileRendererIndexedDBToken(
@@ -115,6 +121,8 @@ constexpr char kRendererIndexedDBScript[] = R"JS((() => {
   const mode = parameters.get("mode");
   const tokenA = parameters.get("token-a");
   const tokenB = parameters.get("token-b");
+  const requireCacheApiWriteReadback =
+      parameters.get("cache-api") === "write-readback";
   const tokenPattern = /^[0-9a-f]{64}$/;
   const databaseName = "m7-renderer-indexed-db-v1";
   const storeName = "m7-renderer-indexed-db-store-v1";
@@ -126,6 +134,9 @@ constexpr char kRendererIndexedDBScript[] = R"JS((() => {
   // this source-selected test artifact.
   const fixedFailureCategories = new Set([
     "arguments", "fence-abort", "fence-error", "fence-exception",
+    "cache-api-match-error", "cache-api-match-exception",
+    "cache-api-readback-mismatch", "cache-api-open-error",
+    "cache-api-put-error",
     "open-abort", "open-backing-store", "open-blocked", "open-exception",
     "open-invalid-state", "open-missing-bucket", "open-not-allowed",
     "open-other", "open-quota", "open-security", "open-unknown",
@@ -224,17 +235,58 @@ constexpr char kRendererIndexedDBScript[] = R"JS((() => {
     transaction.onabort = () => reject("fence-abort");
   });
 
+  const writeAndReadCacheApiToken = async (token) => {
+    const cacheName = "m7-renderer-cache-api-write-readback-v1-" + token;
+    const request = new Request(
+        "https://m7-cache-api-write-readback.test/" + token,
+        {method: "GET"});
+    let cache;
+    try {
+      cache = await globalThis.caches.open(cacheName);
+    } catch (_error) {
+      throw "cache-api-open-error";
+    }
+    try {
+      await cache.put(request, new Response(token));
+    } catch (_error) {
+      throw "cache-api-put-error";
+    }
+    let response;
+    try {
+      response = await cache.match(request);
+    } catch (_error) {
+      throw "cache-api-match-error";
+    }
+    if (!response) {
+      throw "cache-api-readback-mismatch";
+    }
+    try {
+      if (await response.text() !== token) {
+        throw "cache-api-readback-mismatch";
+      }
+    } catch (category) {
+      throw category === "cache-api-readback-mismatch" ? category :
+          "cache-api-match-exception";
+    }
+  };
+
   const complete = async () => {
     if (mode === "renderer-write" &&
-        hasExactParameters(["mode", "token-a"]) &&
+        hasExactParameters(requireCacheApiWriteReadback ?
+            ["mode", "token-a", "cache-api"] : ["mode", "token-a"]) &&
         tokenPattern.test(tokenA || "") && tokenB === null) {
       const database = await openDatabase();
       try {
         await writeToken(database, tokenA);
+        if (requireCacheApiWriteReadback) {
+          await writeAndReadCacheApiToken(tokenA);
+        }
       } finally {
         database.close();
       }
-      document.title = "m7-indexed-db-renderer-write-ok";
+      document.title = requireCacheApiWriteReadback ?
+          "m7-indexed-db-renderer-write-cache-api-write-readback-ok" :
+          "m7-indexed-db-renderer-write-ok";
       return;
     }
 

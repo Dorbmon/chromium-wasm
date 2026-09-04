@@ -59,14 +59,23 @@ constexpr char kRendererVerifyAWriteBMode[] = "renderer-verify-a-write-b";
 constexpr char kRendererVerifyBMode[] = "renderer-verify-b";
 constexpr size_t kOpaqueTokenLength = 64;
 constexpr base::TimeDelta kRendererOperationTimeout = base::Seconds(10);
+// The selected Cache API operation can initialize CacheStorage, quota, and a
+// backend on its first use. Keep the ordinary renderer IndexedDB smoke's
+// shorter bound while giving that additional selected operation the same
+// budget as the enclosing persistent-default-partition shutdown probe.
+constexpr base::TimeDelta kRendererCacheAPIWriteReadbackOperationTimeout =
+    base::Seconds(20);
 // IDBDatabase::close() and the renderer title update use separate Mojo
 // endpoints. Wait briefly for the real close to propagate to IndexedDB's
-// bucket thread, but retain kRendererOperationTimeout as the absolute bound.
+// bucket thread while retaining the selected renderer-operation timeout as the
+// absolute bound.
 constexpr base::TimeDelta kRendererCloseObservationRetryDelay =
     base::Milliseconds(20);
 
 constexpr char kRendererIndexedDBPageURL[] = "chrome://m7-indexed-db/";
 constexpr char16_t kRendererWriteTitle[] = u"m7-indexed-db-renderer-write-ok";
+constexpr char16_t kRendererWriteCacheAPIWriteReadbackTitle[] =
+    u"m7-indexed-db-renderer-write-cache-api-write-readback-ok";
 constexpr char16_t kRendererVerifyAWriteBTitle[] =
     u"m7-indexed-db-renderer-verify-a-write-b-ok";
 constexpr char16_t kRendererVerifyBTitle[] =
@@ -306,6 +315,8 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
         scoped_refptr<content::SiteInstance> renderer_site_instance)
       : mode_(input.mode),
         emit_protocol_markers_(input.emit_protocol_markers),
+        require_cache_api_write_readback_(
+            input.require_cache_api_write_readback),
         browser_context_(browser_context),
         close_receipt_lifetime_(std::move(profile_io_hold),
                                 std::move(quarantine_callback)),
@@ -383,7 +394,10 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
 
     EmitMarker("READY");
     renderer_operation_timeout_.Start(
-        FROM_HERE, kRendererOperationTimeout,
+        FROM_HERE,
+        require_cache_api_write_readback_
+            ? kRendererCacheAPIWriteReadbackOperationTimeout
+            : kRendererOperationTimeout,
         base::BindOnce(&State::OnRendererOperationTimeout,
                        weak_ptr_factory_.GetWeakPtr()));
     content::NavigationController::LoadURLParams load_params(
@@ -402,6 +416,10 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
 
   bool IsActive() const { return close_receipt_lifetime_.IsActive(); }
   bool DidSucceed() const { return close_receipt_lifetime_.DidSucceed(); }
+  bool DidRendererCacheAPIWriteAndReadbackSucceed() const {
+    return require_cache_api_write_readback_ &&
+           renderer_cache_api_write_and_readback_succeeded_;
+  }
   bool HasOutstandingAdmission() const {
     return close_receipt_lifetime_.HasOutstandingAdmission();
   }
@@ -418,6 +436,10 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
 
  private:
   bool IsValidMode() const {
+    if (require_cache_api_write_readback_ &&
+        mode_ != SmokeMode::kRendererWrite) {
+      return false;
+    }
     switch (mode_) {
       case SmokeMode::kRendererWrite:
         return IsOpaqueToken(token_a_) && token_b_.empty() &&
@@ -439,9 +461,12 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
   GURL BuildRendererPageURL() const {
     switch (mode_) {
       case SmokeMode::kRendererWrite:
-        return GURL(base::StringPrintf("%s?mode=%s&token-a=%s",
+        return GURL(base::StringPrintf("%s?mode=%s&token-a=%s%s",
                                        kRendererIndexedDBPageURL,
-                                       kRendererWriteMode, token_a_.c_str()));
+                                       kRendererWriteMode, token_a_.c_str(),
+                                       require_cache_api_write_readback_
+                                           ? "&cache-api=write-readback"
+                                           : ""));
       case SmokeMode::kRendererVerifyAWriteB:
         return GURL(base::StringPrintf("%s?mode=%s&token-a=%s&token-b=%s",
                                        kRendererIndexedDBPageURL,
@@ -459,7 +484,9 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
 
   bool IsRendererExpectedTitle(const std::u16string& title) const {
     return (mode_ == SmokeMode::kRendererWrite &&
-            title == kRendererWriteTitle) ||
+            title == (require_cache_api_write_readback_
+                          ? kRendererWriteCacheAPIWriteReadbackTitle
+                          : kRendererWriteTitle)) ||
            (mode_ == SmokeMode::kRendererVerifyAWriteB &&
             title == kRendererVerifyAWriteBTitle) ||
            (mode_ == SmokeMode::kRendererVerifyB &&
@@ -593,6 +620,18 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
     if (!ValidateRendererStorageBoundary()) {
       ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kProfile);
       return;
+    }
+
+    if (require_cache_api_write_readback_) {
+      // The source-selected renderer reaches this title only after its
+      // synthetic HTTPS Cache API request was put and matched with the exact
+      // opaque token. Keep the acknowledgement separate from the IndexedDB
+      // close receipt: no Cache Storage lifecycle claim follows from it.
+      if (mode_ != SmokeMode::kRendererWrite) {
+        ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kContent);
+        return;
+      }
+      renderer_cache_api_write_and_readback_succeeded_ = true;
     }
 
     if (mode_ == SmokeMode::kRendererWrite) {
@@ -783,8 +822,10 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
   bool renderer_primary_navigation_failed_ = false;
   bool renderer_page_completed_ = false;
   bool renderer_completion_check_scheduled_ = false;
+  bool renderer_cache_api_write_and_readback_succeeded_ = false;
   SmokeMode mode_ = SmokeMode::kNone;
   bool emit_protocol_markers_ = true;
+  bool require_cache_api_write_readback_ = false;
   raw_ptr<content::BrowserContext> browser_context_ = nullptr;
   WasmProfileIndexedDBCloseReceiptLifetime close_receipt_lifetime_;
   std::string token_a_;
@@ -871,6 +912,11 @@ bool WasmProfileIndexedDBLifetimeParticipant::IsActive() const {
 
 bool WasmProfileIndexedDBLifetimeParticipant::DidSucceed() const {
   return state_ && state_->DidSucceed();
+}
+
+bool WasmProfileIndexedDBLifetimeParticipant::
+    DidRendererCacheAPIWriteAndReadbackSucceed() const {
+  return state_ && state_->DidRendererCacheAPIWriteAndReadbackSucceed();
 }
 
 void WasmProfileIndexedDBLifetimeParticipant::OnOperationRequiresQuarantine() {

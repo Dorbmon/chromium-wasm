@@ -71,6 +71,7 @@ def passing_result(
         "persistentDefaultPartitionLocalStorageMapUpdateAndCloseReceiptProven": True,
         "persistentDefaultPartitionRendererConfigReuseWitnessProven": True,
         "persistentDefaultPartitionIndexedDBRendererWriteAndCloseReceiptProven": True,
+        "persistentDefaultPartitionCacheAPIWriteAndReadbackReceiptProven": True,
         "persistentDefaultPartitionIndexedDBContextCloseReceiptProven": True,
         "persistentDefaultPartitionCookieWriteAcceptedProven": True,
         "persistentDefaultPartitionCookieStoreFlushAcknowledgedProven": True,
@@ -108,7 +109,7 @@ def passing_result(
             "markerSequenceAccepted": True,
             "markerSource": (
                 "stderr-only-fixed-selected-local-storage-renderer-indexed-db-"
-                "context-and-cookie-shutdown-grammar"
+                "cache-api-context-and-cookie-shutdown-grammar"
             ),
             "markers": list(smoke.EXPECTED_MARKERS),
             "noFailMarkerObserved": True,
@@ -221,6 +222,8 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
                 smoke.M7_SHUTDOWN_MARKER_PREFIX
                 + "PERSISTENT_INDEXED_DB_RENDERER_WRITE_AND_CLOSE_OK",
                 smoke.M7_SHUTDOWN_MARKER_PREFIX
+                + "PERSISTENT_CACHE_API_RENDERER_WRITE_AND_READBACK_OK",
+                smoke.M7_SHUTDOWN_MARKER_PREFIX
                 + "PERSISTENT_INDEXED_DB_CONTEXT_CLOSED",
                 smoke.M7_SHUTDOWN_MARKER_PREFIX
                 + "PERSISTENT_COOKIE_WRITE_ACCEPTED",
@@ -272,6 +275,7 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
             "persistentDefaultPartitionLocalStorageMapUpdateAndCloseReceiptProven",
             "persistentDefaultPartitionRendererConfigReuseWitnessProven",
             "persistentDefaultPartitionIndexedDBRendererWriteAndCloseReceiptProven",
+            "persistentDefaultPartitionCacheAPIWriteAndReadbackReceiptProven",
             "persistentDefaultPartitionIndexedDBContextCloseReceiptProven",
             "persistentDefaultPartitionCookieWriteAcceptedProven",
             "persistentDefaultPartitionCookieStoreFlushAcknowledgedProven",
@@ -289,7 +293,7 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
         assert isinstance(run, dict)
         markers = run["markers"]
         assert isinstance(markers, list)
-        markers.pop(6)
+        markers.pop(7)
         run["markerCount"] = len(markers)
         with self.assertRaises(M0Error):
             validate(missing_cookie_marker)
@@ -329,10 +333,20 @@ class M7PersistentDefaultPartitionShutdownProbeDomSmokeTest(unittest.TestCase):
         assert isinstance(run, dict)
         markers = run["markers"]
         assert isinstance(markers, list)
-        markers.pop(4)
+        markers.pop(5)
         run["markerCount"] = len(markers)
         with self.assertRaises(M0Error):
             validate(missing_indexed_db_context_marker)
+
+        missing_cache_api_marker = passing_result()
+        run = missing_cache_api_marker["run"]
+        assert isinstance(run, dict)
+        markers = run["markers"]
+        assert isinstance(markers, list)
+        markers.pop(4)
+        run["markerCount"] = len(markers)
+        with self.assertRaises(M0Error):
+            validate(missing_cache_api_marker)
 
         lease_released = passing_result()
         run = lease_released["run"]

@@ -1750,6 +1750,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "content::SiteInstance::Create(browser_context_)",
             "RENDERER_DEFAULT_PARTITION_CONFIG_REUSE_WITNESS_OK",
             "PERSISTENT_INDEXED_DB_RENDERER_WRITE_AND_CLOSE_OK",
+            "PERSISTENT_CACHE_API_RENDERER_WRITE_AND_READBACK_OK",
             "PERSISTENT_INDEXED_DB_CONTEXT_CLOSED",
             "WasmProfileIndexedDBLifetimeParticipant",
             "kIndexedDBOperationTimeout",
@@ -1776,7 +1777,46 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             with self.subTest(indexed_db_participant_token=token):
                 self.assertIn(token, self.indexed_db_smoke)
         self.assertIn("emit_protocol_markers = true", self.indexed_db_smoke_header)
-        self.assertIn("m7-indexed-db", self.indexed_db_ui)
+        for text, token in (
+            (self.shutdown_probe, "input.require_cache_api_write_readback = true;"),
+            (
+                self.indexed_db_smoke,
+                "DidRendererCacheAPIWriteAndReadbackSucceed()",
+            ),
+            (self.indexed_db_smoke_header, "Cache Storage close, flush, durability"),
+            (self.indexed_db_ui, "https://m7-cache-api-write-readback.test/"),
+            (self.indexed_db_ui, "globalThis.caches.open(cacheName)"),
+            (self.indexed_db_ui, "await cache.put(request, new Response(token))"),
+            (self.indexed_db_ui, "response = await cache.match(request)"),
+            (self.indexed_db_ui, "&cache-api=write-readback"),
+            (
+                self.content_browser_client,
+                "kCacheAPIWriteReadbackSuffix",
+            ),
+        ):
+            with self.subTest(cache_api_token=token):
+                self.assertIn(token, text)
+        self.assertIn(
+            "m7-indexed-db-renderer-write-cache-api-write-readback-ok",
+            self.indexed_db_ui,
+        )
+        outer_indexed_db_timeout = re.search(
+            r"constexpr base::TimeDelta kIndexedDBOperationTimeout = "
+            r"base::Seconds\((\d+)\);",
+            self.shutdown_probe,
+        )
+        renderer_cache_api_timeout = re.search(
+            r"constexpr base::TimeDelta "
+            r"kRendererCacheAPIWriteReadbackOperationTimeout =\n"
+            r"    base::Seconds\((\d+)\);",
+            self.indexed_db_smoke,
+        )
+        self.assertIsNotNone(outer_indexed_db_timeout)
+        self.assertIsNotNone(renderer_cache_api_timeout)
+        self.assertGreaterEqual(
+            int(outer_indexed_db_timeout.group(1)),
+            int(renderer_cache_api_timeout.group(1)) + 5,
+        )
         indexed_db_context_close_start = _body_after_signature(
             self.shutdown_probe, "  void StartIndexedDBContextShutdownReceipt()"
         )
@@ -1824,6 +1864,14 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
                 'EmitMarker("PERSISTENT_INDEXED_DB_RENDERER_WRITE_AND_CLOSE_OK");'
             ),
             self.shutdown_probe.index(
+                'EmitMarker("PERSISTENT_CACHE_API_RENDERER_WRITE_AND_READBACK_OK");'
+            ),
+        )
+        self.assertLess(
+            self.shutdown_probe.index(
+                'EmitMarker("PERSISTENT_CACHE_API_RENDERER_WRITE_AND_READBACK_OK");'
+            ),
+            self.shutdown_probe.index(
                 'EmitMarker("PERSISTENT_INDEXED_DB_CONTEXT_CLOSED");'
             ),
         )
@@ -1843,6 +1891,10 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         )
         self.assertIn(
             "bool indexed_db_context_shutdown_acknowledged,",
+            self.shutdown_probe_header,
+        )
+        self.assertIn(
+            "bool cache_api_renderer_write_and_readback_acknowledged,",
             self.shutdown_probe_header,
         )
         for token in (
@@ -2127,7 +2179,8 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             self.shutdown_probe_header,
         )
         self.assertIn(
-            "RequiresAllThreeSelectedOwnerReceipts", self.shutdown_probe_unit
+            "RequiresAllThreeSelectedOwnerCloseReceiptsAndCacheAPIOperation",
+            self.shutdown_probe_unit,
         )
         selected_owner_predicate = _body_after_signature(
             self.shutdown_probe,
@@ -2138,6 +2191,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "local_storage_on_disk_commit_and_close_acknowledged",
             "renderer_default_partition_config_reuse_witness",
             "indexed_db_renderer_write_and_close_acknowledged",
+            "cache_api_renderer_write_and_readback_acknowledged",
             "IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(",
         ):
             with self.subTest(selected_owner_predicate_token=token):

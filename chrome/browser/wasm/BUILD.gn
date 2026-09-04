@@ -1952,9 +1952,11 @@ config("wasm_profile_m7_indexed_db_smoke_config") {
 }
 
 # This is shared by the standalone child-partition witness and the bounded
-# persistent-default-partition shutdown probe. It selects only the renderer
-# IndexedDB close-fence implementation; the two artifacts retain separate
-# lifecycle and marker protocols.
+# persistent-default-partition shutdown probe. It selects the renderer
+# IndexedDB close-fence implementation; the shutdown probe additionally uses
+# that selected renderer for one Cache API write/readback operation, not a
+# Cache Storage close/flush receipt. The artifacts retain separate lifecycle
+# and marker protocols.
 config("wasm_profile_m7_renderer_indexed_db_close_fence_config") {
   defines = [ "CHROME_WASM_M7_RENDERER_INDEXED_DB_CLOSE_FENCE_TEST=1" ]
 }
@@ -1967,9 +1969,11 @@ config("wasm_profile_m7_persistent_default_partition_policy_probe_config") {
 
 # This probe changes only WasmProfile's default StoragePartition policy method,
 # Content's selected Cookies SQLite path, one direct LocalStorage close-fence
-# implementation, one renderer IndexedDB selected-owner close fence plus the
-# selected default context's result-bearing close, and BrowserMainParts'
-# source-selected shutdown path. It has no public class layout API.
+# implementation, one renderer IndexedDB selected-owner close fence plus a
+# separate Cache API write/readback operation and the selected default
+# context's result-bearing close, and BrowserMainParts' source-selected
+# shutdown path. The Cache API operation is not a Cache Storage close/flush
+# receipt. It has no public class layout API.
 config("wasm_profile_m7_persistent_default_partition_shutdown_probe_config") {
   defines = [
     "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1",
@@ -2489,10 +2493,11 @@ if (enable_chromium_wasm_m7_default_partition_local_storage_test ||
 # one exact WebUI document and holds profile I/O until that live bucket's
 # ForceClose callback completes. The standalone artifact validates its
 # non-default child partition; the shutdown probe validates the pre-created
-# persistent default partition through its captured-config identity protocol
-# and then closes that exact partition's complete IndexedDB context, including
-# sealed factory ingress and child destruction, before its Cookies receipt
-# begins.
+# persistent default partition through its captured-config identity protocol,
+# performs one separate Cache API write/readback operation, and then closes
+# that exact partition's complete IndexedDB context, including sealed factory
+# ingress and child destruction, before its Cookies receipt begins. The Cache
+# API operation is not a Cache Storage close/flush receipt.
 if (enable_chromium_wasm_m7_profile_indexed_db_test ||
     enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
   # Keep the profile-I/O controller independently testable. It owns no
@@ -2605,10 +2610,12 @@ if (enable_chromium_wasm_m7_persistent_default_partition_policy_probe) {
 
 # This source-selected probe intentionally creates Chromium's real persistent
 # default StoragePartition and materializes one direct LocalStorage LevelDB
-# participant, a renderer IndexedDB selected-bucket receipt plus complete
-# default-context close, and its Cookies SQLite backend. It requires those
-# selected owner receipts before the synchronous map drop; the caller always
-# chooses V4 failure retirement rather than a clean drain.
+# participant, a renderer IndexedDB selected-bucket receipt plus a separate
+# Cache API write/readback operation and complete default-context close, and
+# its Cookies SQLite backend. It requires those selected owner close receipts
+# and the separate Cache API operation before the synchronous map drop; the
+# caller always chooses V4 failure retirement rather than a clean drain. The
+# Cache API operation is not a Cache Storage close/flush receipt.
 if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
   source_set("wasm_profile_persistent_default_partition_shutdown_probe") {
     public = [ "wasm_profile_persistent_default_partition_shutdown_probe.h" ]

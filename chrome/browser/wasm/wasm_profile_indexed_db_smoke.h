@@ -42,6 +42,12 @@ struct WasmProfileIndexedDBSmokeInput {
   // only its own aggregate marker grammar after this participant's selected
   // bucket receipt returns, so it suppresses these per-operation diagnostics.
   bool emit_protocol_markers = true;
+
+  // The selected persistent-default-partition shutdown probe additionally
+  // asks this transient renderer to make one real Cache API write/readback.
+  // The browser observes only the fixed renderer acknowledgement; this is not
+  // a Cache Storage close, flush, durability, or aggregate-partition receipt.
+  bool require_cache_api_write_readback = false;
 };
 
 // Owns the one source-selected persistent IndexedDB renderer witness. The
@@ -51,8 +57,11 @@ struct WasmProfileIndexedDBSmokeInput {
 //
 // This is intentionally narrower than a complete StoragePartition shutdown:
 // it proves only the selected Chromium IndexedDB backing store closes before
-// the V4 backend drain. It neither makes normal profiles persistent nor claims
-// Cache Storage, quota, Service Worker, or all-partition ownership semantics.
+// the V4 backend drain. When requested by its input, the same renderer also
+// proves one selected-partition Cache API write/readback before that IndexedDB
+// close. Neither observation makes normal profiles persistent or claims Cache
+// Storage close/flush, quota, Service Worker, or all-partition ownership
+// semantics.
 class WasmProfileIndexedDBLifetimeParticipant {
  public:
   WasmProfileIndexedDBLifetimeParticipant(
@@ -83,6 +92,11 @@ class WasmProfileIndexedDBLifetimeParticipant {
   bool QuarantineForFailureShutdown();
   bool IsActive() const;
   bool DidSucceed() const;
+  // True only when |require_cache_api_write_readback| selected the renderer's
+  // synthetic HTTPS Cache API put/match operation and it completed before the
+  // IndexedDB close receipt. This is deliberately not a Cache Storage close or
+  // durable-flush acknowledgement.
+  bool DidRendererCacheAPIWriteAndReadbackSucceed() const;
 
  private:
   class State;

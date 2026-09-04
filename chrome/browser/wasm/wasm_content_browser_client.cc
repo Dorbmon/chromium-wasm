@@ -156,14 +156,20 @@ bool IsWasmM7RendererIndexedDBURL(const GURL& url) {
     const std::string_view query = url.query();
     constexpr std::string_view kWritePrefix =
         "mode=renderer-write&token-a=";
+    constexpr std::string_view kCacheAPIWriteReadbackSuffix =
+        "&cache-api=write-readback";
     constexpr std::string_view kVerifyAWriteBPrefix =
         "mode=renderer-verify-a-write-b&token-a=";
     constexpr std::string_view kVerifyAWriteBSeparator = "&token-b=";
     constexpr std::string_view kVerifyBPrefix =
         "mode=renderer-verify-b&token-b=";
     if (query.starts_with(kWritePrefix)) {
-      return IsWasmM7RendererIndexedDBToken(
-          query.substr(kWritePrefix.size()));
+      std::string_view token = query.substr(kWritePrefix.size());
+      if (token.ends_with(kCacheAPIWriteReadbackSuffix)) {
+        token = token.substr(
+            0, token.size() - kCacheAPIWriteReadbackSuffix.size());
+      }
+      return IsWasmM7RendererIndexedDBToken(token);
     }
     if (query.starts_with(kVerifyBPrefix)) {
       return IsWasmM7RendererIndexedDBToken(

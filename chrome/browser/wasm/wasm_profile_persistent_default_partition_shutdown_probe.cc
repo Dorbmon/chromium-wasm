@@ -57,7 +57,11 @@ constexpr char kCookieName[] =
     "wasm_m7_persistent_default_partition_shutdown";
 constexpr char kRendererIndexedDBPageURL[] = "chrome://m7-indexed-db/";
 constexpr base::TimeDelta kLocalStorageOperationTimeout = base::Seconds(20);
-constexpr base::TimeDelta kIndexedDBOperationTimeout = base::Seconds(20);
+// The selected renderer participant receives its own 20-second operation
+// bound. This enclosing receipt timer starts before that participant and also
+// covers title delivery, selected-bucket observation, and its close callback,
+// so retain an explicit margin rather than racing two equal deadlines.
+constexpr base::TimeDelta kIndexedDBOperationTimeout = base::Seconds(25);
 constexpr base::TimeDelta kIndexedDBContextShutdownTimeout =
     base::Seconds(20);
 constexpr base::TimeDelta kCookieOperationTimeout = base::Seconds(20);
@@ -81,6 +85,7 @@ WasmProfileIndexedDBSmokeInput CreateIndexedDBReceiptInput() {
   input.token_a_digest =
       base::HexEncodeLower(crypto::hash::Sha256(input.token_a));
   input.emit_protocol_markers = false;
+  input.require_cache_api_write_readback = true;
   return input;
 }
 
@@ -100,7 +105,10 @@ bool IsRendererIndexedDBSite(const GURL& site) {
 GURL CreateRendererIndexedDBReceiptPageURL(
     const WasmProfileIndexedDBSmokeInput& input) {
   return GURL(base::StrCat({kRendererIndexedDBPageURL,
-                            "?mode=renderer-write&token-a=", input.token_a}));
+                            "?mode=renderer-write&token-a=", input.token_a,
+                            input.require_cache_api_write_readback
+                                ? "&cache-api=write-readback"
+                                : ""}));
 }
 
 const char* FailureStageName(
@@ -443,7 +451,10 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
     indexed_db_operation_timeout_.Stop();
     if (!indexed_db_receipt_started_ || indexed_db_receipt_completed_ ||
         failure_reported_ || !indexed_db_participant_ || !success ||
-        !indexed_db_participant_->DidSucceed() || !browser_context_ ||
+        !indexed_db_participant_->DidSucceed() ||
+        !indexed_db_participant_->
+            DidRendererCacheAPIWriteAndReadbackSucceed() ||
+        !browser_context_ ||
         !partition_ || !renderer_default_partition_config_reuse_witness_ ||
         !IsCapturedDefaultPartitionStillSoleLoaded()) {
       FailIndexedDBReceipt();
@@ -452,8 +463,10 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
 
     indexed_db_receipt_completed_ = true;
     indexed_db_renderer_write_and_close_acknowledged_ = true;
+    cache_api_renderer_write_and_readback_acknowledged_ = true;
     indexed_db_participant_.reset();
     EmitMarker("PERSISTENT_INDEXED_DB_RENDERER_WRITE_AND_CLOSE_OK");
+    EmitMarker("PERSISTENT_CACHE_API_RENDERER_WRITE_AND_READBACK_OK");
     StartIndexedDBContextShutdownReceipt();
   }
 
@@ -470,6 +483,7 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
         !IsCapturedDefaultPartitionStillSoleLoaded() ||
         !indexed_db_receipt_completed_ ||
         !indexed_db_renderer_write_and_close_acknowledged_ ||
+        !cache_api_renderer_write_and_readback_acknowledged_ ||
         indexed_db_context_shutdown_started_ ||
         indexed_db_context_shutdown_acknowledged_ ||
         indexed_db_context_shutdown_profile_io_hold_ ||
@@ -583,6 +597,7 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
         !renderer_default_partition_config_reuse_witness_ ||
         !indexed_db_receipt_completed_ ||
         !indexed_db_renderer_write_and_close_acknowledged_ ||
+        !cache_api_renderer_write_and_readback_acknowledged_ ||
         !indexed_db_context_shutdown_acknowledged_ ||
         cookie_phase_started_ || !owner_receipts_completion_) {
       ReportFailure(
@@ -868,6 +883,7 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
         local_storage_on_disk_commit_and_close_acknowledged_,
         renderer_default_partition_config_reuse_witness_,
         indexed_db_renderer_write_and_close_acknowledged_,
+        cache_api_renderer_write_and_readback_acknowledged_,
         indexed_db_context_shutdown_acknowledged_,
         cookie_write_accepted_, cookie_store_flush_acknowledged_,
         cookie_sqlite_row_readback_succeeded_,
@@ -1160,6 +1176,7 @@ class WasmPersistentDefaultPartitionShutdownProbeState {
   bool indexed_db_receipt_started_ = false;
   bool indexed_db_receipt_completed_ = false;
   bool indexed_db_renderer_write_and_close_acknowledged_ = false;
+  bool cache_api_renderer_write_and_readback_acknowledged_ = false;
   bool indexed_db_context_shutdown_started_ = false;
   bool indexed_db_context_shutdown_acknowledged_ = false;
   bool cookie_phase_started_ = false;
@@ -1251,6 +1268,7 @@ bool IsWasmPersistentDefaultPartitionSelectedOwnerReceiptWitness(
     bool local_storage_on_disk_commit_and_close_acknowledged,
     bool renderer_default_partition_config_reuse_witness,
     bool indexed_db_renderer_write_and_close_acknowledged,
+    bool cache_api_renderer_write_and_readback_acknowledged,
     bool indexed_db_context_shutdown_acknowledged,
     bool cookie_write_accepted,
     bool cookie_store_flush_acknowledged,
@@ -1260,6 +1278,7 @@ bool IsWasmPersistentDefaultPartitionSelectedOwnerReceiptWitness(
          local_storage_on_disk_commit_and_close_acknowledged &&
          renderer_default_partition_config_reuse_witness &&
          indexed_db_renderer_write_and_close_acknowledged &&
+         cache_api_renderer_write_and_readback_acknowledged &&
          indexed_db_context_shutdown_acknowledged &&
          IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(
              cookie_write_accepted, cookie_store_flush_acknowledged,

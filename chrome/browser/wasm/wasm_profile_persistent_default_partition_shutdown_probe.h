@@ -23,15 +23,17 @@ namespace chrome {
 // Fixed failure grammar for the source-selected shutdown probe. Its narrow
 // positive observations are one persistent default StoragePartition's direct
 // LocalStorage map-update/close receipt, a renderer IndexedDB
-// write/selected-bucket-close receipt followed by that default partition's
-// complete IndexedDB context close receipt, CookieManager
+// write/selected-bucket-close receipt plus one synthetic HTTPS Cache API
+// write/readback operation followed by that default partition's complete
+// IndexedDB context close receipt, CookieManager
 // write/flush/SQLite-row-readback/close receipts, and the later map-drop
 // boundary. It fails closed before the one initial default-partition config
 // derivation, then permits later nonallocating SiteInfo/frame-host config
 // derivations and proves renderer use from the actual committed partition plus
 // sole-map/no-create observations.
-// It deliberately does not claim an aggregate partition close, a durable
-// profile flush, recovery, or fresh-document persistence.
+// The Cache API operation is not a Cache Storage close/flush receipt. It
+// deliberately does not claim an aggregate partition close, a durable profile
+// flush, recovery, or fresh-document persistence.
 enum class WasmPersistentDefaultPartitionShutdownProbeFailureStage {
   kArguments,
   kStorage,
@@ -88,10 +90,14 @@ bool IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(
     bool cookie_sqlite_row_readback_succeeded,
     bool cookie_store_close_acknowledged);
 
-// This probe has receipts for exactly three selected persistent owners: the
-// LocalStorage LevelDB close-fence participant, one renderer-created IndexedDB
-// bucket plus the exact default partition's complete IndexedDB context close,
-// and CookieManager's SQLite store. The LocalStorage result means only an
+// This probe has close receipts for exactly three selected persistent owners:
+// the LocalStorage LevelDB close-fence participant, one renderer-created
+// IndexedDB bucket plus the exact default partition's complete IndexedDB
+// context close, and CookieManager's SQLite store. Before the IndexedDB close,
+// that same selected renderer must also make one synthetic HTTPS Cache API
+// write/readback. This separate operation acknowledgement is not a Cache
+// Storage close, flush, durability, or aggregate-owner receipt. The
+// LocalStorage result means only an
 // on-disk LevelDB map-update snapshot/commit result followed by exact
 // LocalStorage destruction and a database-sequence FIFO receipt; it is not an
 // fsync or physical-crash durability result. The IndexedDB result first
@@ -109,6 +115,7 @@ bool IsWasmPersistentDefaultPartitionSelectedOwnerReceiptWitness(
     bool local_storage_on_disk_commit_and_close_acknowledged,
     bool renderer_default_partition_config_reuse_witness,
     bool indexed_db_renderer_write_and_close_acknowledged,
+    bool cache_api_renderer_write_and_readback_acknowledged,
     bool indexed_db_context_shutdown_acknowledged,
     bool cookie_write_accepted,
     bool cookie_store_flush_acknowledged,
@@ -144,8 +151,11 @@ TakeWasmPersistentDefaultPartitionShutdownProbeRendererConfigForSite(
 // result and the same LocalStorage instance's database-sequence FIFO close
 // receipt. It then creates one unassigned renderer SiteInstance and performs
 // one renderer IndexedDB write and selected-bucket close receipt in that same
-// default partition, then waits for that partition's IndexedDBContextImpl
-// close completion after every live bucket seals factory ingress and completes
+// default partition. Before that close, the renderer also performs one Cache
+// API synthetic-HTTPS put/match readback in the exact same partition; this
+// remains an operation observation, not a Cache Storage close/flush claim.
+// The probe then waits for that partition's IndexedDBContextImpl close
+// completion after every live bucket seals factory ingress and completes
 // destruction. The renderer witness checks the captured config, actual
 // committed frame partition pointer/config/profile path, and sole
 // partition-map no-create lookups before and after the selected close. It then
@@ -156,8 +166,9 @@ TakeWasmPersistentDefaultPartitionShutdownProbeRendererConfigForSite(
 // test-only cookie-store close completion receipt before invoking
 // |on_selected_owner_receipts_closed|. The helper retains its primary
 // profile-I/O hold through the later synchronous partition-map drop. These
-// remain three selected receipts only; callers must choose failure retirement
-// rather than a clean V4 handoff.
+// remain three selected close receipts plus the separate Cache API operation
+// observation only; callers must choose failure retirement rather than a
+// clean V4 handoff.
 bool RunWasmPersistentDefaultPartitionShutdownProbe(
     content::BrowserContext* browser_context,
     WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,

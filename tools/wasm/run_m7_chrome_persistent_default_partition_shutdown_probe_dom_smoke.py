@@ -15,6 +15,7 @@ The host accepts only the fixed stderr sequence ``DEFAULT_PARTITION_CREATED``,
 ``PERSISTENT_LOCAL_STORAGE_ON_DISK_MAP_UPDATE_AND_CLOSE_OK``,
 ``RENDERER_DEFAULT_PARTITION_CONFIG_REUSE_WITNESS_OK``,
 ``PERSISTENT_INDEXED_DB_RENDERER_WRITE_AND_CLOSE_OK``,
+``PERSISTENT_CACHE_API_RENDERER_WRITE_AND_READBACK_OK``,
 ``PERSISTENT_INDEXED_DB_CONTEXT_CLOSED``,
 ``PERSISTENT_COOKIE_WRITE_ACCEPTED``,
 ``PERSISTENT_COOKIE_STORE_FLUSH_ACKNOWLEDGED``,
@@ -30,10 +31,11 @@ failure-retirement receipt, and
 ``FAIL_CLOSED_RETIREMENT``. It also requires the native positive nonzero
 process-exit import and Emscripten's matching ``onExit`` callback.
 
-This is a LocalStorage-plus-renderer-IndexedDB-context-plus-Cookie
-selected-owner structural shutdown witness. It does not claim an aggregate
-StoragePartition close, a durable profile flush, a clean profile handoff,
-fresh-document persistence, crash recovery, or permanent map absence.
+This is a LocalStorage-plus-renderer-IndexedDB-plus-Cache-API-operation-plus-
+Cookie selected-owner structural shutdown witness. It does not claim a Cache
+Storage close/flush, aggregate StoragePartition close, durable profile flush,
+a clean profile handoff, fresh-document persistence, crash recovery, or
+permanent map absence.
 
 Build the dedicated artifact first:
 
@@ -77,7 +79,8 @@ SENTINEL = "CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE_DOM"
 CASE = "chrome_persistent_default_partition_shutdown_probe_m7"
 SCOPE = (
     "one-fresh-source-selected-chrome-wasm-persistent-default-partition-"
-    "local-storage-map-update-close-renderer-indexed-db-write-close-context-close-"
+    "local-storage-map-update-close-renderer-indexed-db-write-close-cache-api-"
+    "write-readback-context-close-"
     "cookie-write-flush-sqlite-row-readback-"
     "close-destruction-notification-"
     "return-map-fail-closed-retirement-"
@@ -120,6 +123,8 @@ EXPECTED_MARKERS = (
     + "RENDERER_DEFAULT_PARTITION_CONFIG_REUSE_WITNESS_OK",
     M7_SHUTDOWN_MARKER_PREFIX
     + "PERSISTENT_INDEXED_DB_RENDERER_WRITE_AND_CLOSE_OK",
+    M7_SHUTDOWN_MARKER_PREFIX
+    + "PERSISTENT_CACHE_API_RENDERER_WRITE_AND_READBACK_OK",
     M7_SHUTDOWN_MARKER_PREFIX + "PERSISTENT_INDEXED_DB_CONTEXT_CLOSED",
     M7_SHUTDOWN_MARKER_PREFIX + "PERSISTENT_COOKIE_WRITE_ACCEPTED",
     M7_SHUTDOWN_MARKER_PREFIX + "PERSISTENT_COOKIE_STORE_FLUSH_ACKNOWLEDGED",
@@ -267,6 +272,7 @@ _RESULT_FIELDS = frozenset(
         "nonzeroProcessExitAndAckProven",
         "partitionDestroyNotificationDispatchedProven",
         "partitionMapDroppedProven",
+        "persistentDefaultPartitionCacheAPIWriteAndReadbackReceiptProven",
         "persistentDefaultPartitionCookieSQLiteRowReadbackProven",
         "persistentDefaultPartitionCookieStoreCloseReceiptProven",
         "persistentDefaultPartitionCookieStoreFlushAcknowledgedProven",
@@ -783,7 +789,7 @@ def _validate_run(value: object) -> None:
         or run.get("markerCount") != len(EXPECTED_MARKERS)
         or run.get("markerSequenceAccepted") is not True
         or run.get("markerSource")
-        != "stderr-only-fixed-selected-local-storage-renderer-indexed-db-context-and-cookie-shutdown-grammar"
+        != "stderr-only-fixed-selected-local-storage-renderer-indexed-db-cache-api-context-and-cookie-shutdown-grammar"
         or run.get("markers") != list(EXPECTED_MARKERS)
         or run.get("noFailMarkerObserved") is not True
         or run.get("nonzeroProcessExitAndAckReceived") is not True
@@ -874,6 +880,7 @@ def validate_result(
         "persistentDefaultPartitionLocalStorageMapUpdateAndCloseReceiptProven": True,
         "persistentDefaultPartitionRendererConfigReuseWitnessProven": True,
         "persistentDefaultPartitionIndexedDBRendererWriteAndCloseReceiptProven": True,
+        "persistentDefaultPartitionCacheAPIWriteAndReadbackReceiptProven": True,
         "persistentDefaultPartitionIndexedDBContextCloseReceiptProven": True,
         "persistentDefaultPartitionCookieWriteAcceptedProven": True,
         "persistentDefaultPartitionCookieStoreFlushAcknowledgedProven": True,
@@ -1009,6 +1016,7 @@ def shutdown_probe_summary() -> dict[str, object]:
         "persistentDefaultPartitionLocalStorageMapUpdateAndCloseReceiptProven": True,
         "persistentDefaultPartitionRendererConfigReuseWitnessProven": True,
         "persistentDefaultPartitionIndexedDBRendererWriteAndCloseReceiptProven": True,
+        "persistentDefaultPartitionCacheAPIWriteAndReadbackReceiptProven": True,
         "persistentDefaultPartitionIndexedDBContextCloseReceiptProven": True,
         "persistentDefaultPartitionCookieSQLiteRowReadbackProven": True,
         "persistentDefaultPartitionCookieStoreCloseReceiptProven": True,

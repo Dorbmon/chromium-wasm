@@ -15,8 +15,10 @@ namespace chrome {
 // The test-only chrome://m7-indexed-db document is intentionally limited to
 // the source-selected M7 IndexedDB artifact. Its external script performs one
 // real IndexedDB write or reopen/read/write operation in the renderer's normal
-// WebUI world; the browser-side smoke observes only the fixed title completion
-// and the RenderFrameHost's actual StorageKey.
+// WebUI world. The shutdown probe additionally selects one Cache API
+// put/match operation before its IndexedDB close; that operation is not a
+// Cache Storage close/flush receipt. The browser-side smoke observes only the
+// fixed title completion and the RenderFrameHost's actual StorageKey.
 class WasmProfileRendererIndexedDBUI final : public content::WebUIController {
  public:
   explicit WasmProfileRendererIndexedDBUI(content::WebUI* web_ui);
