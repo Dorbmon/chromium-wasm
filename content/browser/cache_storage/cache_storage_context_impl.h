@@ -6,8 +6,10 @@
 #define CONTENT_BROWSER_CACHE_STORAGE_CACHE_STORAGE_CONTEXT_IMPL_H_
 
 #include <memory>
+#include <string>
 
 #include "base/files/file_path.h"
+#include "base/functional/callback_forward.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
@@ -66,6 +68,15 @@ class CONTENT_EXPORT CacheStorageContextImpl
                 background_fetch_client_remote,
             mojo::PendingRemote<storage::mojom::BlobStorageContext>
                 blob_storage_context);
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // Forwards the selected probe's no-create live Cache API receipt on this
+  // context's scheduler sequence.
+  void CloseLiveDefaultCacheAndWriteIndexForWasmTest(
+      const blink::StorageKey& storage_key,
+      const std::u16string& cache_name,
+      base::OnceCallback<void(bool)> callback);
+#endif
 
   // storage::mojom::CacheStorageControl implementation.
   void AddReceiver(

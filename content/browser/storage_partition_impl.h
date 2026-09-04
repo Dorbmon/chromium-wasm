@@ -14,6 +14,7 @@
 #include "base/containers/flat_map.h"
 #include "base/dcheck_is_on.h"
 #include "base/files/file_path.h"
+#include "base/functional/callback_forward.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
@@ -212,6 +213,14 @@ class CONTENT_EXPORT StoragePartitionImpl
   // This is intentionally narrower than StoragePartition shutdown and exists
   // only for the Wasm persistent-default-partition shutdown probe.
   bool ShutdownIndexedDBForWasmTest(base::OnceClosure completion);
+
+  // Starts one receipt for an already-live Cache API cache selected by its
+  // default StorageKey. The completion result does not imply CacheStorage-wide
+  // shutdown, fsync, or aggregate profile durability.
+  bool CloseLiveDefaultCacheAndWriteIndexForWasmTest(
+      const blink::StorageKey& storage_key,
+      const std::u16string& cache_name,
+      base::OnceCallback<void(bool)> completion);
 #endif
   FileSystemAccessEntryFactory* GetFileSystemAccessEntryFactory() override;
   storage::mojom::CacheStorageControl* GetCacheStorageControl() override;

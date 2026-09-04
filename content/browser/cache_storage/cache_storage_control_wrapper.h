@@ -5,7 +5,10 @@
 #ifndef CONTENT_BROWSER_CACHE_STORAGE_CACHE_STORAGE_CONTROL_WRAPPER_H_
 #define CONTENT_BROWSER_CACHE_STORAGE_CACHE_STORAGE_CONTROL_WRAPPER_H_
 
+#include <string>
+
 #include "base/files/file_path.h"
+#include "base/functional/callback_forward.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner.h"
@@ -41,6 +44,16 @@ class CacheStorageControlWrapper : public storage::mojom::CacheStorageControl {
   storage::mojom::CacheStorageControl* GetCacheStorageControl() {
     return cache_storage_control_.get();
   }
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // Starts the selected probe's live Cache API receipt. |callback| is posted
+  // back to this wrapper's UI sequence after the context's asynchronous
+  // close-and-index-replacement operation completes.
+  void CloseLiveDefaultCacheAndWriteIndexForWasmTest(
+      const blink::StorageKey& storage_key,
+      const std::u16string& cache_name,
+      base::OnceCallback<void(bool)> callback);
+#endif
 
   // storage::mojom::CacheStorageControl implementation.
   void AddReceiver(

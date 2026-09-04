@@ -3,6 +3,8 @@
 // found in the LICENSE file.
 
 #include "content/browser/cache_storage/cache_storage_control_wrapper.h"
+
+#include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 
@@ -58,6 +60,28 @@ CacheStorageControlWrapper::CacheStorageControlWrapper(
 CacheStorageControlWrapper::~CacheStorageControlWrapper() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 }
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+void CacheStorageControlWrapper::CloseLiveDefaultCacheAndWriteIndexForWasmTest(
+    const blink::StorageKey& storage_key,
+    const std::u16string& cache_name,
+    base::OnceCallback<void(bool)> callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(callback);
+
+  if (!cache_storage_context_) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  cache_storage_context_
+      .AsyncCall(
+          &CacheStorageContextImpl::
+              CloseLiveDefaultCacheAndWriteIndexForWasmTest)
+      .WithArgs(storage_key, cache_name,
+                base::BindPostTaskToCurrentDefault(std::move(callback)));
+}
+#endif
 
 void CacheStorageControlWrapper::AddReceiver(
     const network::CrossOriginEmbedderPolicy& cross_origin_embedder_policy,

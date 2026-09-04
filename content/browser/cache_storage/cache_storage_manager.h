@@ -12,6 +12,7 @@
 
 #include "base/dcheck_is_on.h"
 #include "base/files/file_path.h"
+#include "base/functional/callback_forward.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/sequence_checker.h"
@@ -80,6 +81,16 @@ class CONTENT_EXPORT CacheStorageManager
   CacheStorageHandle OpenCacheStorage(
       const storage::BucketLocator& bucket_locator,
       storage::mojom::CacheStorageOwner owner);
+
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // Closes a named cache only when exactly one already-live, disk-backed
+  // Cache API entry exists for |storage_key|'s default bucket. This neither
+  // creates a CacheStorage nor resolves a bucket through QuotaManager.
+  void CloseLiveDefaultCacheAndWriteIndexForWasmTest(
+      const blink::StorageKey& storage_key,
+      const std::u16string& cache_name,
+      base::OnceCallback<void(bool)> callback);
+#endif
 
   // QuotaClient support.
   void GetBucketUsage(

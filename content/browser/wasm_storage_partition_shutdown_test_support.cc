@@ -114,6 +114,21 @@ bool ShutdownWasmStoragePartitionIndexedDBForTest(
           std::move(on_closed)));
 }
 
+bool CloseWasmStoragePartitionLiveDefaultCacheAndWriteIndexForTest(
+    StoragePartition* partition,
+    const blink::StorageKey& storage_key,
+    const std::u16string& cache_name,
+    base::OnceCallback<void(bool)> on_result) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  if (!partition || !on_result) {
+    return false;
+  }
+
+  return static_cast<StoragePartitionImpl*>(partition)
+      ->CloseLiveDefaultCacheAndWriteIndexForWasmTest(
+          storage_key, cache_name, std::move(on_result));
+}
+
 namespace internal {
 
 void NotifyWasmStoragePartitionShutdownNotificationReturnedForTest(

@@ -448,10 +448,23 @@ class CacheStorageManagerTest : public testing::Test {
     return result.Get();
   }
 
+  bool CloseLiveDefaultCacheAndWriteIndexForWasmTest(
+      const blink::StorageKey& storage_key,
+      const std::u16string& cache_name) {
+    base::test::TestFuture<bool> result;
+    cache_manager_->CloseLiveDefaultCacheAndWriteIndexForWasmTest(
+        storage_key, cache_name, result.GetCallback());
+    return result.Get();
+  }
+
   bool CacheStorageIsInitializedForWasmTest(
       const storage::BucketLocator& bucket_locator) {
     CacheStorageHandle cache_storage = CacheStorageForBucket(bucket_locator);
     return CacheStorage::From(cache_storage)->initialized_;
+  }
+
+  size_t CacheStorageMapSizeForWasmTest() const {
+    return cache_manager_->cache_storage_map_.size();
   }
 
   bool HasLiveCacheForWasmTest(const storage::BucketLocator& bucket_locator,
@@ -2609,8 +2622,13 @@ TEST_F(CacheStorageManagerTest,
   const base::FilePath index_path = IndexPathForWasmTest(bucket_locator1_);
   ASSERT_TRUE(base::WriteFile(index_path, kSentinel));
 
+  // The selector must not close a different live CacheStorage entry.
+  EXPECT_FALSE(CloseLiveDefaultCacheAndWriteIndexForWasmTest(
+      storage_key2_, kCacheName));
+  EXPECT_TRUE(HasLiveCacheForWasmTest(bucket_locator1_, kCacheName));
+
   EXPECT_TRUE(
-      CloseNamedCacheAndWriteIndexForWasmTest(bucket_locator1_, kCacheName));
+      CloseLiveDefaultCacheAndWriteIndexForWasmTest(storage_key1_, kCacheName));
   EXPECT_FALSE(IndexWritePendingForWasmTest(bucket_locator1_));
 
   std::string serialized_index;
@@ -2627,7 +2645,7 @@ TEST_F(CacheStorageManagerTest,
 
   // A closed child cache cannot manufacture a second close/index receipt.
   EXPECT_FALSE(
-      CloseNamedCacheAndWriteIndexForWasmTest(bucket_locator1_, kCacheName));
+      CloseLiveDefaultCacheAndWriteIndexForWasmTest(storage_key1_, kCacheName));
 }
 
 TEST_F(CacheStorageManagerTest,
@@ -2646,6 +2664,23 @@ TEST_F(CacheStorageManagerTest,
   EXPECT_FALSE(CloseNamedCacheAndWriteIndexForWasmTest(bucket_locator1_,
                                                         kMissingCacheName));
   EXPECT_FALSE(HasLiveCacheForWasmTest(bucket_locator1_, kMissingCacheName));
+}
+
+TEST_F(CacheStorageManagerTest,
+       CloseLiveDefaultCacheAndWriteIndexForWasmTestDoesNotCreateOrSelectOtherOwner) {
+  constexpr char16_t kCacheName[] = u"wasm-background-fetch-cache";
+
+  EXPECT_EQ(0u, CacheStorageMapSizeForWasmTest());
+  EXPECT_FALSE(CloseLiveDefaultCacheAndWriteIndexForWasmTest(storage_key1_,
+                                                              kCacheName));
+  EXPECT_EQ(0u, CacheStorageMapSizeForWasmTest());
+
+  ASSERT_TRUE(Open(bucket_locator1_, kCacheName,
+                   storage::mojom::CacheStorageOwner::kBackgroundFetch));
+  ASSERT_EQ(1u, CacheStorageMapSizeForWasmTest());
+  EXPECT_FALSE(CloseLiveDefaultCacheAndWriteIndexForWasmTest(storage_key1_,
+                                                              kCacheName));
+  EXPECT_EQ(1u, CacheStorageMapSizeForWasmTest());
 }
 
 TEST_F(CacheStorageManagerMemoryOnlyTest,

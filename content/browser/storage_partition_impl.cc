@@ -1730,6 +1730,21 @@ bool StoragePartitionImpl::ShutdownIndexedDBForWasmTest(
   }
   return true;
 }
+
+bool StoragePartitionImpl::CloseLiveDefaultCacheAndWriteIndexForWasmTest(
+    const blink::StorageKey& storage_key,
+    const std::u16string& cache_name,
+    base::OnceCallback<void(bool)> completion) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  if (!initialized_ || !cache_storage_control_wrapper_ || !completion) {
+    return false;
+  }
+
+  cache_storage_control_wrapper_
+      ->CloseLiveDefaultCacheAndWriteIndexForWasmTest(
+          storage_key, cache_name, std::move(completion));
+  return true;
+}
 #endif
 
 FileSystemAccessEntryFactory*

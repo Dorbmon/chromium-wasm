@@ -101,6 +101,24 @@ void CacheStorageContextImpl::Init(
       std::move(background_fetch_client_remote));
 }
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+void CacheStorageContextImpl::CloseLiveDefaultCacheAndWriteIndexForWasmTest(
+    const blink::StorageKey& storage_key,
+    const std::u16string& cache_name,
+    base::OnceCallback<void(bool)> callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(callback);
+
+  if (!cache_manager_) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  cache_manager_->CloseLiveDefaultCacheAndWriteIndexForWasmTest(
+      storage_key, cache_name, std::move(callback));
+}
+#endif
+
 void CacheStorageContextImpl::AddReceiver(
     const network::CrossOriginEmbedderPolicy& cross_origin_embedder_policy,
     mojo::PendingRemote<network::mojom::CrossOriginEmbedderPolicyReporter>

@@ -5,8 +5,11 @@
 #ifndef CONTENT_PUBLIC_BROWSER_WASM_STORAGE_PARTITION_SHUTDOWN_TEST_SUPPORT_H_
 #define CONTENT_PUBLIC_BROWSER_WASM_STORAGE_PARTITION_SHUTDOWN_TEST_SUPPORT_H_
 
+#include <string>
+
 #include "base/functional/callback_forward.h"
 #include "content/common/content_export.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
 
 namespace content {
 
@@ -42,6 +45,19 @@ CONTENT_EXPORT void CancelWasmStoragePartitionShutdownNotificationForTest();
 CONTENT_EXPORT bool ShutdownWasmStoragePartitionIndexedDBForTest(
     StoragePartition* partition,
     base::OnceClosure on_closed);
+
+// Starts a result-bearing receipt for one already-live disk-backed Cache API
+// cache in |partition|'s default bucket matching |storage_key|. |on_result|
+// runs on the caller's UI sequence after the named cache backend close and
+// CacheStorage index replacement callback. A false result, or a false return
+// value, establishes no close receipt. This is not CacheStorage-wide
+// quiescence, an fsync, or a durable profile-persistence acknowledgement.
+CONTENT_EXPORT bool
+CloseWasmStoragePartitionLiveDefaultCacheAndWriteIndexForTest(
+    StoragePartition* partition,
+    const blink::StorageKey& storage_key,
+    const std::u16string& cache_name,
+    base::OnceCallback<void(bool)> on_result);
 #endif
 
 }  // namespace content

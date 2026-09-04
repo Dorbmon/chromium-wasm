@@ -431,6 +431,52 @@ CacheStorageHandle CacheStorageManager::OpenCacheStorage(
   return it->second->CreateHandle();
 }
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+void CacheStorageManager::CloseLiveDefaultCacheAndWriteIndexForWasmTest(
+    const blink::StorageKey& storage_key,
+    const std::u16string& cache_name,
+    base::OnceCallback<void(bool)> callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(callback);
+
+  // A persistence receipt must not be manufactured for the memory backend.
+  // Do not call OpenCacheStorage() or resolve a BucketLocator here: the
+  // renderer-owned Cache API object must already have created this exact
+  // manager entry.
+  if (IsMemoryBacked()) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  CacheStorage* selected_storage = nullptr;
+  for (const auto& [key, cache_storage] : cache_storage_map_) {
+    const storage::BucketLocator& bucket_locator = key.first;
+    if (key.second != storage::mojom::CacheStorageOwner::kCacheAPI ||
+        !bucket_locator.is_default ||
+        bucket_locator.storage_key != storage_key) {
+      continue;
+    }
+
+    // Default buckets created through QuotaManager have a real positive id,
+    // so the map cannot be looked up with ForDefaultBucket(). Reject
+    // ambiguous or malformed live entries instead of choosing one.
+    if (!cache_storage || selected_storage) {
+      std::move(callback).Run(false);
+      return;
+    }
+    selected_storage = cache_storage.get();
+  }
+
+  if (!selected_storage) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  selected_storage->CloseNamedCacheAndWriteIndexForWasmTest(
+      cache_name, std::move(callback));
+}
+#endif
+
 void CacheStorageManager::NotifyCacheListChanged(
     const storage::BucketLocator& bucket_locator) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
