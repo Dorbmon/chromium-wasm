@@ -56,6 +56,7 @@ namespace {
 constexpr char kSmokeSwitch[] = "wasm-profile-indexed-db-smoke";
 constexpr char kTokenASwitch[] = "wasm-profile-indexed-db-token-a";
 constexpr char kTokenBSwitch[] = "wasm-profile-indexed-db-token-b";
+constexpr char kCacheAPISwitch[] = "wasm-profile-indexed-db-cache-api";
 constexpr char kRendererWriteMode[] = "renderer-write";
 constexpr char kRendererVerifyAWriteBMode[] = "renderer-verify-a-write-b";
 constexpr char kRendererVerifyBMode[] = "renderer-verify-b";
@@ -77,13 +78,21 @@ constexpr base::TimeDelta kRendererCloseObservationRetryDelay =
 constexpr char kRendererIndexedDBPageURL[] = "chrome://m7-indexed-db/";
 constexpr char kRendererCacheAPINamePrefix[] =
     "m7-renderer-cache-api-write-readback-v1-";
+constexpr char kRendererCacheAPIPersistenceName[] =
+    "m7-renderer-cache-api-persistence-v1";
 constexpr char16_t kRendererWriteTitle[] = u"m7-indexed-db-renderer-write-ok";
 constexpr char16_t kRendererWriteCacheAPIWriteReadbackTitle[] =
     u"m7-indexed-db-renderer-write-cache-api-write-readback-ok";
+constexpr char16_t kRendererWriteCacheAPIPersistenceTitle[] =
+    u"m7-indexed-db-renderer-write-cache-api-persistence-ok";
 constexpr char16_t kRendererVerifyAWriteBTitle[] =
     u"m7-indexed-db-renderer-verify-a-write-b-ok";
+constexpr char16_t kRendererVerifyAWriteBCacheAPIPersistenceTitle[] =
+    u"m7-indexed-db-renderer-verify-a-write-b-cache-api-persistence-ok";
 constexpr char16_t kRendererVerifyBTitle[] =
     u"m7-indexed-db-renderer-verify-b-ok";
+constexpr char16_t kRendererVerifyBCacheAPIPersistenceTitle[] =
+    u"m7-indexed-db-renderer-verify-b-cache-api-persistence-ok";
 constexpr char16_t kRendererFailureTitle[] = u"m7-indexed-db-failed";
 // Keep these values exactly aligned with WasmContentBrowserClient's
 // source-selected child-partition configuration. They are part of the
@@ -148,6 +157,13 @@ class WasmProfileIndexedDBProtocolState {
     const std::string mode = command_line->GetSwitchValueASCII(kSmokeSwitch);
     const bool has_token_a = command_line->HasSwitch(kTokenASwitch);
     const bool has_token_b = command_line->HasSwitch(kTokenBSwitch);
+    const bool has_cache_api = command_line->HasSwitch(kCacheAPISwitch);
+    if (has_cache_api &&
+        command_line->GetSwitchValueASCII(kCacheAPISwitch) != "persistence") {
+      ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kArguments);
+      return false;
+    }
+    input_.require_cache_api_persistence = has_cache_api;
     if (mode == kRendererWriteMode && has_token_a && !has_token_b) {
       input_.mode = SmokeMode::kRendererWrite;
       input_.token_a = command_line->GetSwitchValueASCII(kTokenASwitch);
@@ -209,6 +225,8 @@ class WasmProfileIndexedDBProtocolState {
     input_.token_b.clear();
     result.token_a_digest = input_.token_a_digest;
     result.token_b_digest = input_.token_b_digest;
+    result.require_cache_api_persistence =
+        input_.require_cache_api_persistence;
     return result;
   }
 
@@ -321,6 +339,7 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
         emit_protocol_markers_(input.emit_protocol_markers),
         require_cache_api_write_readback_(
             input.require_cache_api_write_readback),
+        require_cache_api_persistence_(input.require_cache_api_persistence),
         browser_context_(browser_context),
         close_receipt_lifetime_(std::move(profile_io_hold),
                                 std::move(quarantine_callback)),
@@ -399,7 +418,7 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
     EmitMarker("READY");
     renderer_operation_timeout_.Start(
         FROM_HERE,
-        require_cache_api_write_readback_
+        (require_cache_api_write_readback_ || require_cache_api_persistence_)
             ? kRendererCacheAPIWriteReadbackOperationTimeout
             : kRendererOperationTimeout,
         base::BindOnce(&State::OnRendererOperationTimeout,
@@ -425,7 +444,7 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
            renderer_cache_api_write_and_readback_succeeded_;
   }
   bool DidRendererCacheAPIBackendCloseAndIndexReplacementSucceed() const {
-    return require_cache_api_write_readback_ &&
+    return RequiresRendererCacheAPINativeReceipt() &&
            renderer_cache_api_backend_close_and_index_replacement_succeeded_;
   }
   bool HasOutstandingAdmission() const {
@@ -444,6 +463,9 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
 
  private:
   bool IsValidMode() const {
+    if (require_cache_api_write_readback_ && require_cache_api_persistence_) {
+      return false;
+    }
     if (require_cache_api_write_readback_ &&
         mode_ != SmokeMode::kRendererWrite) {
       return false;
@@ -467,23 +489,28 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
   }
 
   GURL BuildRendererPageURL() const {
+    const std::string cache_api_suffix =
+        require_cache_api_write_readback_
+            ? "&cache-api=write-readback"
+            : (require_cache_api_persistence_ ? "&cache-api=persistence"
+                                               : "");
     switch (mode_) {
       case SmokeMode::kRendererWrite:
         return GURL(base::StringPrintf("%s?mode=%s&token-a=%s%s",
                                        kRendererIndexedDBPageURL,
                                        kRendererWriteMode, token_a_.c_str(),
-                                       require_cache_api_write_readback_
-                                           ? "&cache-api=write-readback"
-                                           : ""));
+                                       cache_api_suffix.c_str()));
       case SmokeMode::kRendererVerifyAWriteB:
-        return GURL(base::StringPrintf("%s?mode=%s&token-a=%s&token-b=%s",
+        return GURL(base::StringPrintf("%s?mode=%s&token-a=%s&token-b=%s%s",
                                        kRendererIndexedDBPageURL,
                                        kRendererVerifyAWriteBMode,
-                                       token_a_.c_str(), token_b_.c_str()));
+                                       token_a_.c_str(), token_b_.c_str(),
+                                       cache_api_suffix.c_str()));
       case SmokeMode::kRendererVerifyB:
-        return GURL(base::StringPrintf("%s?mode=%s&token-b=%s",
+        return GURL(base::StringPrintf("%s?mode=%s&token-b=%s%s",
                                        kRendererIndexedDBPageURL,
-                                       kRendererVerifyBMode, token_b_.c_str()));
+                                       kRendererVerifyBMode, token_b_.c_str(),
+                                       cache_api_suffix.c_str()));
       case SmokeMode::kNone:
         return GURL();
     }
@@ -494,16 +521,28 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
     return (mode_ == SmokeMode::kRendererWrite &&
             title == (require_cache_api_write_readback_
                           ? kRendererWriteCacheAPIWriteReadbackTitle
-                          : kRendererWriteTitle)) ||
+                          : (require_cache_api_persistence_
+                                 ? kRendererWriteCacheAPIPersistenceTitle
+                                 : kRendererWriteTitle))) ||
            (mode_ == SmokeMode::kRendererVerifyAWriteB &&
-            title == kRendererVerifyAWriteBTitle) ||
+            title == (require_cache_api_persistence_
+                          ? kRendererVerifyAWriteBCacheAPIPersistenceTitle
+                          : kRendererVerifyAWriteBTitle)) ||
            (mode_ == SmokeMode::kRendererVerifyB &&
-            title == kRendererVerifyBTitle);
+            title == (require_cache_api_persistence_
+                          ? kRendererVerifyBCacheAPIPersistenceTitle
+                          : kRendererVerifyBTitle));
   }
 
   const std::string& ActiveDigest() const {
     return mode_ == SmokeMode::kRendererWrite ? token_a_digest_
                                                : token_b_digest_;
+  }
+
+  bool RequiresRendererCacheAPINativeReceipt() const {
+    return require_cache_api_write_readback_ ||
+           (require_cache_api_persistence_ &&
+            renderer_cache_api_persistence_succeeded_);
   }
 
   void CleanupProfileBoundResources() {
@@ -653,7 +692,21 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
       ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kProfile);
       return;
     }
-    if (require_cache_api_write_readback_) {
+    if (require_cache_api_persistence_) {
+      if (mode_ == SmokeMode::kRendererWrite) {
+        EmitDigestMarker("CACHE_API_WRITE_READBACK_OK", token_a_digest_);
+      } else if (mode_ == SmokeMode::kRendererVerifyAWriteB) {
+        EmitDigestMarker("CACHE_API_REOPEN_READ_A_OK", token_a_digest_);
+        EmitDigestMarker("CACHE_API_WRITE_B_OK", token_b_digest_);
+      } else if (mode_ == SmokeMode::kRendererVerifyB) {
+        EmitDigestMarker("CACHE_API_REOPEN_READ_B_OK", token_b_digest_);
+      } else {
+        ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kContent);
+        return;
+      }
+      renderer_cache_api_persistence_succeeded_ = true;
+    }
+    if (RequiresRendererCacheAPINativeReceipt()) {
       StartRendererCacheAPIBackendCloseAndIndexReplacement();
       return;
     }
@@ -730,7 +783,7 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
   }
 
   void StartRendererCacheAPIBackendCloseAndIndexReplacement() {
-    if (!require_cache_api_write_readback_) {
+    if (!RequiresRendererCacheAPINativeReceipt()) {
       RequestSelectedBucketDetails();
       return;
     }
@@ -738,14 +791,21 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
         !renderer_storage_partition_ || !storage_key_ ||
         !renderer_web_contents_ ||
         renderer_web_contents_->GetLastCommittedURL() != renderer_page_url_ ||
+        (require_cache_api_persistence_ &&
+         !renderer_cache_api_persistence_succeeded_) ||
         renderer_cache_api_backend_close_and_index_replacement_started_ ||
         renderer_cache_api_backend_close_and_index_replacement_succeeded_) {
       ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kClose);
       return;
     }
 
-    std::string cache_name_utf8(kRendererCacheAPINamePrefix);
-    cache_name_utf8.append(token_a_);
+    std::string cache_name_utf8;
+    if (require_cache_api_persistence_) {
+      cache_name_utf8 = kRendererCacheAPIPersistenceName;
+    } else {
+      cache_name_utf8 = kRendererCacheAPINamePrefix;
+      cache_name_utf8.append(token_a_);
+    }
     const std::u16string cache_name = base::UTF8ToUTF16(cache_name_utf8);
     renderer_cache_api_backend_close_and_index_replacement_started_ = true;
     if (!content::CloseWasmStoragePartitionLiveDefaultCacheAndWriteIndexForTest(
@@ -764,7 +824,9 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
         renderer_cache_api_backend_close_and_index_replacement_succeeded_ ||
         !success || !renderer_page_completed_ || !renderer_storage_partition_ ||
         !storage_key_ || !renderer_web_contents_ ||
-        renderer_web_contents_->GetLastCommittedURL() != renderer_page_url_) {
+        renderer_web_contents_->GetLastCommittedURL() != renderer_page_url_ ||
+        (require_cache_api_persistence_ &&
+         !renderer_cache_api_persistence_succeeded_)) {
       ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kClose);
       return;
     }
@@ -880,12 +942,14 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
   bool renderer_page_completed_ = false;
   bool renderer_completion_check_scheduled_ = false;
   bool renderer_cache_api_write_and_readback_succeeded_ = false;
+  bool renderer_cache_api_persistence_succeeded_ = false;
   bool renderer_cache_api_backend_close_and_index_replacement_started_ = false;
   bool renderer_cache_api_backend_close_and_index_replacement_succeeded_ =
       false;
   SmokeMode mode_ = SmokeMode::kNone;
   bool emit_protocol_markers_ = true;
   bool require_cache_api_write_readback_ = false;
+  bool require_cache_api_persistence_ = false;
   raw_ptr<content::BrowserContext> browser_context_ = nullptr;
   WasmProfileIndexedDBCloseReceiptLifetime close_receipt_lifetime_;
   std::string token_a_;
@@ -1004,7 +1068,8 @@ bool HasWasmProfileIndexedDBSmokeArguments() {
       base::CommandLine::ForCurrentProcess();
   return command_line->HasSwitch(kSmokeSwitch) ||
          command_line->HasSwitch(kTokenASwitch) ||
-         command_line->HasSwitch(kTokenBSwitch);
+         command_line->HasSwitch(kTokenBSwitch) ||
+         command_line->HasSwitch(kCacheAPISwitch);
 }
 
 bool EnableWasmProfileIndexedDBSmokeTestMode() {

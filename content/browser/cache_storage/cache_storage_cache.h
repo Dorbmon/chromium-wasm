@@ -185,7 +185,7 @@ class CONTENT_EXPORT CacheStorageCache {
   // will exit early. Close should only be called once per CacheStorageCache.
   void Close(base::OnceClosure callback);
 
-#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+#if defined(CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST)
   // Closes an already-open backend for the source-selected Wasm profile
   // storage probe. The callback receives true only after the backend deletion
   // completion callback runs. It receives false without scheduling a close if
@@ -528,7 +528,7 @@ class CONTENT_EXPORT CacheStorageCache {
       std::unique_ptr<QueryCacheResults> query_cache_results);
 
   void CloseImpl(base::OnceClosure callback);
-#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+#if defined(CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST)
   void CloseAndReportResultForWasmTestImpl(
       base::OnceCallback<void(bool)> callback);
 #endif

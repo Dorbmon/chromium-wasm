@@ -1730,7 +1730,9 @@ bool StoragePartitionImpl::ShutdownIndexedDBForWasmTest(
   }
   return true;
 }
+#endif
 
+#if defined(CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST)
 bool StoragePartitionImpl::CloseLiveDefaultCacheAndWriteIndexForWasmTest(
     const blink::StorageKey& storage_key,
     const std::u16string& cache_name,

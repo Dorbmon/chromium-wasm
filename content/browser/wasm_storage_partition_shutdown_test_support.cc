@@ -19,6 +19,7 @@ namespace content {
 
 namespace {
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
 class WasmStoragePartitionShutdownNotificationState {
  public:
   bool Arm(StoragePartition* expected_partition,
@@ -79,9 +80,11 @@ WasmStoragePartitionShutdownNotificationState& GetNotificationState() {
       state;
   return *state;
 }
+#endif
 
 }  // namespace
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
 bool ArmWasmStoragePartitionShutdownNotificationForTest(
     StoragePartition* expected_partition,
     base::OnceClosure on_notification_returned) {
@@ -113,7 +116,9 @@ bool ShutdownWasmStoragePartitionIndexedDBForTest(
           base::SequencedTaskRunner::GetCurrentDefault(),
           std::move(on_closed)));
 }
+#endif
 
+#if defined(CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST)
 bool CloseWasmStoragePartitionLiveDefaultCacheAndWriteIndexForTest(
     StoragePartition* partition,
     const blink::StorageKey& storage_key,
@@ -128,7 +133,9 @@ bool CloseWasmStoragePartitionLiveDefaultCacheAndWriteIndexForTest(
       ->CloseLiveDefaultCacheAndWriteIndexForWasmTest(
           storage_key, cache_name, std::move(on_result));
 }
+#endif
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
 namespace internal {
 
 void NotifyWasmStoragePartitionShutdownNotificationReturnedForTest(
@@ -137,5 +144,6 @@ void NotifyWasmStoragePartitionShutdownNotificationReturnedForTest(
 }
 
 }  // namespace internal
+#endif
 
 }  // namespace content

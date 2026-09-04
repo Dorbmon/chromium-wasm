@@ -61,7 +61,7 @@ CacheStorageControlWrapper::~CacheStorageControlWrapper() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 }
 
-#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+#if defined(CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST)
 void CacheStorageControlWrapper::CloseLiveDefaultCacheAndWriteIndexForWasmTest(
     const blink::StorageKey& storage_key,
     const std::u16string& cache_name,

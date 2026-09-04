@@ -62,10 +62,13 @@ def passing_result(
     evidence: smoke.DocumentEvidence,
     *,
     module_identity: str,
+    cache_api_persistence: bool = False,
 ) -> dict[str, object]:
     phase, mode = smoke.phase_for_ordinal(ordinal)
     digest_a, digest_b = smoke._expected_token_digests(ordinal, escrow)
-    markers = smoke.expected_markers(ordinal, escrow)
+    markers = smoke.expected_markers(
+        ordinal, escrow, cache_api_persistence=cache_api_persistence
+    )
     return {
         "artifact": artifact(),
         "bridge": {
@@ -76,6 +79,7 @@ def passing_result(
             "processExitDispatches": 1,
             "protocol": 1,
         },
+        "cacheApiPersistence": cache_api_persistence,
         "captureHarness": harness(),
         "case": smoke.CASE,
         "document": {
@@ -216,6 +220,7 @@ class RendererIndexedDBOuterReloadDomSmokeTest(unittest.TestCase):
                     expected_document=evidence,
                     escrow=escrow,
                     prohibited=session.prohibited_values(),
+                    cache_api_persistence=session.cache_api_persistence,
                 )
             )
             self.assertTrue(session.accept_ready(RESULT_TOKEN, ordinal))
@@ -233,6 +238,69 @@ class RendererIndexedDBOuterReloadDomSmokeTest(unittest.TestCase):
                 session.arm_next_reload(ordinal, time_origin)
         smoke.validate_outer_document_transitions(*results)
         self.assertEqual([document.navigation_type for document in documents], ["navigate", "reload", "reload"])
+
+    def test_cache_api_persistence_mode_requires_phase_markers_and_capability(self) -> None:
+        escrow = smoke.new_token_escrow()
+        session = smoke.OuterReloadSession(
+            RESULT_TOKEN,
+            SESSION,
+            escrow,
+            cache_api_persistence=True,
+        )
+        results: list[smoke.PhaseResult] = []
+        for ordinal, time_origin in enumerate((1.0, 2.0, 3.0), start=1):
+            evidence = accept_document(session, ordinal, time_origin)
+            payload = session.bootstrap_payload(SESSION)
+            assert payload is not None
+            self.assertIs(payload["cacheApiPersistence"], True)
+            self.assertTrue(payload["cacheApiPersistence"])
+            receipt = passing_result(
+                ordinal,
+                escrow,
+                evidence,
+                module_identity=(str(ordinal + 6) * 32),
+                cache_api_persistence=True,
+            )
+            self.assertTrue(session.accept_result(RESULT_TOKEN, ordinal))
+            results.append(
+                smoke.validate_phase_result(
+                    receipt,
+                    ordinal=ordinal,
+                    expected_versions=VERSIONS,
+                    expected_artifact=artifact(),
+                    expected_capture_harness=harness(),
+                    expected_origin=ORIGIN,
+                    expected_document=evidence,
+                    escrow=escrow,
+                    prohibited=session.prohibited_values(),
+                    cache_api_persistence=True,
+                )
+            )
+            self.assertTrue(session.accept_ready(RESULT_TOKEN, ordinal))
+            if ordinal < 3:
+                session.arm_next_reload(ordinal, time_origin)
+        smoke.validate_outer_document_transitions(*results)
+
+        missing_cache_receipt = passing_result(
+            1,
+            escrow,
+            smoke.DocumentEvidence("navigate", 1.0),
+            module_identity="9" * 32,
+        )
+        missing_cache_receipt["cacheApiPersistence"] = True
+        with self.assertRaises(M0Error):
+            smoke.validate_phase_result(
+                missing_cache_receipt,
+                ordinal=1,
+                expected_versions=VERSIONS,
+                expected_artifact=artifact(),
+                expected_capture_harness=harness(),
+                expected_origin=ORIGIN,
+                expected_document=smoke.DocumentEvidence("navigate", 1.0),
+                escrow=escrow,
+                prohibited=session.prohibited_values(),
+                cache_api_persistence=True,
+            )
 
     def test_result_rejects_any_raw_token_and_missing_close_marker(self) -> None:
         escrow = smoke.new_token_escrow()
@@ -337,7 +405,16 @@ class RendererIndexedDBOuterReloadDomSmokeTest(unittest.TestCase):
         self.assertNotIn(escrow.token_b, url)
         self.assertEqual(
             set(parse_qs(urlsplit(url).query, keep_blank_values=True)),
-            {"artifact", "captureHarness", "module", "resultToken", "session", "timeoutMs", "versions"},
+            {
+                "artifact",
+                "cacheApi",
+                "captureHarness",
+                "module",
+                "resultToken",
+                "session",
+                "timeoutMs",
+                "versions",
+            },
         )
         client_source = source("chrome/browser/wasm/wasm_content_browser_client.cc")
         self.assertIn("CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST", client_source)
@@ -446,8 +523,8 @@ class RendererIndexedDBOuterReloadDomSmokeTest(unittest.TestCase):
                     headers={"Content-Type": "application/json"},
                 )
                 self.assertEqual(connection.getresponse().status, 204)
-                self.assertEqual(server.result_queue.get_nowait()[0], 1)
-                self.assertEqual(server.ready_queue.get_nowait()[0], 1)
+                self.assertEqual(server.result_queue.get(timeout=1)[0], 1)
+                self.assertEqual(server.ready_queue.get(timeout=1)[0], 1)
                 connection.close()
             finally:
                 server.shutdown()

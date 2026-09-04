@@ -173,7 +173,7 @@ class CONTENT_EXPORT CacheStorage : public CacheStorageCacheObserver {
   // an estimate only since the cache may be modified at any time.
   void Size(SizeCallback callback);
 
-#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+#if defined(CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST)
   // Closes one already-live disk-backed Cache API cache, then replaces its
   // CacheStorage index for the source-selected Wasm profile storage probe.
   // The callback receives true only after both the cache backend deletion
@@ -327,7 +327,7 @@ class CONTENT_EXPORT CacheStorage : public CacheStorageCacheObserver {
                               int64_t* accumulator,
                               int64_t size);
 
-#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+#if defined(CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST)
   void CloseNamedCacheAndWriteIndexForWasmTestImpl(
       const std::u16string& cache_name,
       CacheStorageHandle storage_handle,

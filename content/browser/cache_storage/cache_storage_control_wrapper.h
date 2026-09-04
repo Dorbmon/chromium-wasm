@@ -45,7 +45,7 @@ class CacheStorageControlWrapper : public storage::mojom::CacheStorageControl {
     return cache_storage_control_.get();
   }
 
-#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+#if defined(CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST)
   // Starts the selected probe's live Cache API receipt. |callback| is posted
   // back to this wrapper's UI sequence after the context's asynchronous
   // close-and-index-replacement operation completes.

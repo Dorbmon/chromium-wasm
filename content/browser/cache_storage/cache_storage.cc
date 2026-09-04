@@ -924,7 +924,7 @@ void CacheStorage::Size(CacheStorage::SizeCallback callback) {
           scheduler_->WrapCallbackToRunNext(id, std::move(callback))));
 }
 
-#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+#if defined(CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST)
 void CacheStorage::CloseNamedCacheAndWriteIndexForWasmTest(
     const std::u16string& cache_name,
     base::OnceCallback<void(bool)> callback) {

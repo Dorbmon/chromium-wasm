@@ -2906,14 +2906,21 @@ source_set("browser") {
     ]
   }
 
-  if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
-    # Keep this inline destruction-notification witness physically absent from
-    # ordinary Content and ordinary Wasm Chrome. The executable's define does
-    # not propagate back into this source set.
-    defines += [
-      "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1",
-      "CHROME_WASM_M7_LOCAL_STORAGE_CLOSE_FENCE_TEST=1",
-    ]
+  if (enable_chromium_wasm_m7_profile_indexed_db_test ||
+      enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
+    if (enable_chromium_wasm_m7_profile_indexed_db_test) {
+      defines += [
+        "CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST=1",
+        "CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST=1",
+      ]
+    }
+    if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
+      defines += [
+        "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1",
+        "CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST=1",
+        "CHROME_WASM_M7_LOCAL_STORAGE_CLOSE_FENCE_TEST=1",
+      ]
+    }
     sources += [
       "../public/browser/wasm_storage_partition_shutdown_test_support.h",
       "wasm_storage_partition_shutdown_test_support.cc",

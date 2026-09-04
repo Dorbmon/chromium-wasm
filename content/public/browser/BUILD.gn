@@ -46,6 +46,14 @@ config("wasm_m7_persistent_default_partition_shutdown_probe") {
   ]
 }
 
+config("wasm_m7_profile_indexed_db_test") {
+  # The profile define is already supplied by Chrome's source-selected
+  # WasmProfile config. Keep this public config limited to that class-layout
+  # declaration; the cache receipt implementation define is private to the
+  # Content browser target so it does not dirty unrelated dependents.
+  defines = [ "CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST=1" ]
+}
+
 # See //content/BUILD.gn for how this works.
 group("browser") {
   if (is_component_build) {
@@ -729,12 +737,16 @@ source_set("browser_sources") {
     sources += [ "wasm_dom_storage_test_support.h" ]
   }
 
-  if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
-    # Propagate the declaration gate to the selected Chrome probe while the
-    # Content implementation receives its own direct source-set definition.
-    public_configs += [
-      ":wasm_m7_persistent_default_partition_shutdown_probe",
-    ]
+  if (enable_chromium_wasm_m7_profile_indexed_db_test ||
+      enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
+    if (enable_chromium_wasm_m7_profile_indexed_db_test) {
+      public_configs += [ ":wasm_m7_profile_indexed_db_test" ]
+    }
+    if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
+      public_configs += [
+        ":wasm_m7_persistent_default_partition_shutdown_probe",
+      ]
+    }
     sources += [ "wasm_storage_partition_shutdown_test_support.h" ]
   }
 

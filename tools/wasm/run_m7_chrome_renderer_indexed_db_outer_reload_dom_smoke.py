@@ -14,6 +14,9 @@ only code that uses IndexedDB.
 
 This is an orderly close/reopen smoke, not a claim of M7 completion, crash
 durability, broad profile persistence, or general StoragePartition behavior.
+With ``--cache-api-persistence``, each module also opens the same fixed Cache
+API entry, performs the phase-specific write/readback, and receives a native
+selected-cache close/index-replacement receipt before its IndexedDB close.
 """
 
 from __future__ import annotations
@@ -93,6 +96,7 @@ MODULE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _ROOT_QUERY_FIELDS = frozenset(
     (
         "artifact",
+        "cacheApi",
         "captureHarness",
         "module",
         "resultToken",
@@ -126,6 +130,7 @@ _RESULT_FIELDS = frozenset(
     (
         "artifact",
         "bridge",
+        "cacheApiPersistence",
         "captureHarness",
         "case",
         "document",
@@ -283,11 +288,22 @@ def phase_for_ordinal(ordinal: int) -> tuple[str, str]:
         raise M0Error("renderer IndexedDB ordinal is invalid") from exc
 
 
-def expected_markers(ordinal: int, escrow: TokenEscrow) -> list[str]:
+def expected_markers(
+    ordinal: int,
+    escrow: TokenEscrow,
+    *,
+    cache_api_persistence: bool = False,
+) -> list[str]:
+    if type(cache_api_persistence) is not bool:
+        raise M0Error("renderer IndexedDB Cache API mode is invalid")
     if ordinal == 1:
         return [
             f"{MARKER_PREFIX}READY",
             f"{MARKER_PREFIX}RENDERER_WRITE_OK sha256={escrow.token_a_digest}",
+            *([
+                f"{MARKER_PREFIX}CACHE_API_WRITE_READBACK_OK sha256={escrow.token_a_digest}",
+                f"{MARKER_PREFIX}CACHE_API_BACKEND_CLOSED_AND_INDEX_REPLACED sha256={escrow.token_a_digest}",
+            ] if cache_api_persistence else []),
             f"{MARKER_PREFIX}BACKING_STORES_CLOSED sha256={escrow.token_a_digest}",
             f"{MARKER_PREFIX}FENCE_OK sha256={escrow.token_a_digest}",
             f"{MARKER_PREFIX}LEASE_RELEASED",
@@ -297,6 +313,11 @@ def expected_markers(ordinal: int, escrow: TokenEscrow) -> list[str]:
             f"{MARKER_PREFIX}READY",
             f"{MARKER_PREFIX}RENDERER_REOPEN_READ_A_OK sha256={escrow.token_a_digest}",
             f"{MARKER_PREFIX}RENDERER_WRITE_B_OK sha256={escrow.token_b_digest}",
+            *([
+                f"{MARKER_PREFIX}CACHE_API_REOPEN_READ_A_OK sha256={escrow.token_a_digest}",
+                f"{MARKER_PREFIX}CACHE_API_WRITE_B_OK sha256={escrow.token_b_digest}",
+                f"{MARKER_PREFIX}CACHE_API_BACKEND_CLOSED_AND_INDEX_REPLACED sha256={escrow.token_b_digest}",
+            ] if cache_api_persistence else []),
             f"{MARKER_PREFIX}BACKING_STORES_CLOSED sha256={escrow.token_b_digest}",
             f"{MARKER_PREFIX}FENCE_OK sha256={escrow.token_b_digest}",
             f"{MARKER_PREFIX}LEASE_RELEASED",
@@ -305,6 +326,10 @@ def expected_markers(ordinal: int, escrow: TokenEscrow) -> list[str]:
         return [
             f"{MARKER_PREFIX}READY",
             f"{MARKER_PREFIX}RENDERER_REOPEN_READ_B_OK sha256={escrow.token_b_digest}",
+            *([
+                f"{MARKER_PREFIX}CACHE_API_REOPEN_READ_B_OK sha256={escrow.token_b_digest}",
+                f"{MARKER_PREFIX}CACHE_API_BACKEND_CLOSED_AND_INDEX_REPLACED sha256={escrow.token_b_digest}",
+            ] if cache_api_persistence else []),
             f"{MARKER_PREFIX}BACKING_STORES_CLOSED sha256={escrow.token_b_digest}",
             f"{MARKER_PREFIX}FENCE_OK sha256={escrow.token_b_digest}",
             f"{MARKER_PREFIX}LEASE_RELEASED",
@@ -324,7 +349,14 @@ def _valid_document(value: object) -> bool:
 class OuterReloadSession:
     """Server-only escrow and ordered three-document reload state."""
 
-    def __init__(self, result_token: str, session: str, escrow: TokenEscrow):
+    def __init__(
+        self,
+        result_token: str,
+        session: str,
+        escrow: TokenEscrow,
+        *,
+        cache_api_persistence: bool = False,
+    ):
         if (
             not all(CAPABILITY_RE.fullmatch(value) for value in (result_token, session))
             or secrets.compare_digest(result_token, session)
@@ -337,6 +369,9 @@ class OuterReloadSession:
         self._result_token = result_token
         self._session = session
         self.escrow = escrow
+        if type(cache_api_persistence) is not bool:
+            raise M0Error("renderer IndexedDB Cache API mode is invalid")
+        self.cache_api_persistence = cache_api_persistence
         self._lock = threading.Lock()
         self._acknowledgement_gate = threading.Lock()
         self._documents: dict[int, DocumentEvidence] = {}
@@ -439,6 +474,7 @@ class OuterReloadSession:
                 self._bootstraps.add(ordinal)
         phase, mode = phase_for_ordinal(ordinal)
         return {
+            "cacheApiPersistence": self.cache_api_persistence,
             "case": CASE,
             "mode": mode,
             "ordinal": ordinal,
@@ -938,6 +974,7 @@ def create_server(
     session: str,
     escrow: TokenEscrow,
     *,
+    cache_api_persistence: bool = False,
     host_dir: Path | None = None,
     runner_source_path: Path | None = None,
 ) -> RendererIndexedDBOuterReloadServer:
@@ -974,7 +1011,12 @@ def create_server(
     server.host_html = host_files[HOST_HTML_NAME]
     server.host_js = host_files[HOST_JS_NAME]
     server.runner_source = runner_source
-    server.session = OuterReloadSession(result_token, session, escrow)
+    server.session = OuterReloadSession(
+        result_token,
+        session,
+        escrow,
+        cache_api_persistence=cache_api_persistence,
+    )
     server.result_queue: queue.Queue[tuple[int, dict[str, Any]]] = queue.Queue(maxsize=3)
     server.ready_queue: queue.Queue[tuple[int, dict[str, Any]]] = queue.Queue(maxsize=3)
     server.failure_queue: queue.Queue[int] = queue.Queue(maxsize=1)
@@ -1051,6 +1093,7 @@ def smoke_url(
     query = urlencode(
         {
             "artifact": json.dumps(artifact, sort_keys=True, separators=(",", ":")),
+            "cacheApi": "1" if server.session.cache_api_persistence else "0",
             "captureHarness": json.dumps(capture_harness, sort_keys=True, separators=(",", ":")),
             "module": PRODUCT_MODULE_NAME,
             "resultToken": result_token,
@@ -1120,9 +1163,19 @@ def _expected_token_digests(ordinal: int, escrow: TokenEscrow) -> tuple[str | No
     raise M0Error("renderer IndexedDB token ordinal is invalid")
 
 
-def _validate_run(value: object, ordinal: int, escrow: TokenEscrow) -> str:
+def _validate_run(
+    value: object,
+    ordinal: int,
+    escrow: TokenEscrow,
+    *,
+    cache_api_persistence: bool = False,
+) -> str:
+    if type(cache_api_persistence) is not bool:
+        raise M0Error("renderer IndexedDB Cache API mode is invalid")
     run = _exact_fields(value, _RUN_FIELDS, "run")
-    expected = expected_markers(ordinal, escrow)
+    expected = expected_markers(
+        ordinal, escrow, cache_api_persistence=cache_api_persistence
+    )
     required = {
         "abortObserved": False,
         "factoryRejected": False,
@@ -1168,13 +1221,17 @@ def validate_phase_result(
     expected_document: DocumentEvidence,
     escrow: TokenEscrow,
     prohibited: tuple[str, ...],
+    cache_api_persistence: bool = False,
 ) -> PhaseResult:
+    if type(cache_api_persistence) is not bool:
+        raise M0Error("renderer IndexedDB Cache API mode is invalid")
     if _contains_prohibited_strings(value, prohibited):
         raise M0Error("renderer IndexedDB receipt contains an opaque value")
     result = _exact_fields(value, _RESULT_FIELDS, "result")
     phase, mode = phase_for_ordinal(ordinal)
     fixed = {
         "case": CASE,
+        "cacheApiPersistence": cache_api_persistence,
         "m7GateComplete": False,
         "mode": mode,
         "ordinal": ordinal,
@@ -1235,7 +1292,12 @@ def validate_phase_result(
         origin=expected_origin,
         navigation_type=expected_document.navigation_type,
         time_origin=expected_document.time_origin,
-        module_identity=_validate_run(result.get("run"), ordinal, escrow),
+        module_identity=_validate_run(
+            result.get("run"),
+            ordinal,
+            escrow,
+            cache_api_persistence=cache_api_persistence,
+        ),
     )
 
 
@@ -1450,6 +1512,14 @@ def main() -> int:
         ),
     )
     parser.add_argument("--browser", type=Path)
+    parser.add_argument(
+        "--cache-api-persistence",
+        action="store_true",
+        help=(
+            "also prove Cache API write/reopen/readback across the three fresh "
+            "renderer modules"
+        ),
+    )
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--no-sandbox", action="store_true")
     parser.add_argument("--source-bound-receipt", type=Path)
@@ -1475,7 +1545,15 @@ def main() -> int:
         escrow = new_token_escrow()
         out_dir = args.out_dir if args.out_dir.is_absolute() else REPO_ROOT / args.out_dir
         stage = "create-server"
-        server = create_server("127.0.0.1", 0, out_dir, result_token, session, escrow)
+        server = create_server(
+            "127.0.0.1",
+            0,
+            out_dir,
+            result_token,
+            session,
+            escrow,
+            cache_api_persistence=args.cache_api_persistence,
+        )
         source_provenance = ARTIFACT_SOURCE_PROVENANCE
         if args.source_bound_receipt is not None:
             stage = "verify-source-bound-receipt"
@@ -1552,6 +1630,7 @@ def main() -> int:
             expected_document=server.session.document_evidence(1),
             escrow=escrow,
             prohibited=server.session.prohibited_values(),
+            cache_api_persistence=args.cache_api_persistence,
         )
         stage = "phase-one-ready"
         validate_ready_receipt(wait_for_ready_receipt(browser, browser_stderr, server, 1, deadline), first)
@@ -1571,6 +1650,7 @@ def main() -> int:
             expected_document=server.session.document_evidence(2),
             escrow=escrow,
             prohibited=server.session.prohibited_values(),
+            cache_api_persistence=args.cache_api_persistence,
         )
         stage = "phase-two-ready"
         validate_ready_receipt(wait_for_ready_receipt(browser, browser_stderr, server, 2, deadline), second)
@@ -1592,6 +1672,7 @@ def main() -> int:
             expected_document=server.session.document_evidence(3),
             escrow=escrow,
             prohibited=server.session.prohibited_values(),
+            cache_api_persistence=args.cache_api_persistence,
         )
         stage = "phase-three-ready"
         validate_ready_receipt(wait_for_ready_receipt(browser, browser_stderr, server, 3, deadline), third)
@@ -1621,7 +1702,9 @@ def main() -> int:
         return 1
     print(
         f"{SENTINEL}:PASS modules=3 outer_page_reloads=2 "
-        f"artifact_source_provenance={source_provenance} m7_gate_complete=false",
+        f"artifact_source_provenance={source_provenance} "
+        f"cache_api_persistence={str(args.cache_api_persistence).lower()} "
+        "m7_gate_complete=false",
         flush=True,
     )
     return 0

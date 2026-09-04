@@ -42,7 +42,7 @@ const HARNESS_FIELDS = Object.freeze([
   "version_provenance",
 ]);
 const RESULT_FIELDS = Object.freeze([
-  "artifact", "bridge", "captureHarness", "case", "document",
+  "artifact", "bridge", "cacheApiPersistence", "captureHarness", "case", "document",
   "hostBoundary", "m7GateComplete", "mode", "ordinal", "origin", "phase",
   "protocol", "quiescence", "run", "scope", "sharedArrayBuffer", "status",
   "tokenEvidence", "versions",
@@ -165,8 +165,8 @@ function oneQueryValue(query, name) {
 function parseContext() {
   const query = new URLSearchParams(globalThis.location.search);
   const fields = [
-    "artifact", "captureHarness", "module", "resultToken", "session",
-    "timeoutMs", "versions",
+    "artifact", "cacheApi", "captureHarness", "module", "resultToken",
+    "session", "timeoutMs", "versions",
   ];
   if ([...query.keys()].length !== fields.length ||
       !fields.every((field) => query.getAll(field).length === 1) ||
@@ -185,8 +185,13 @@ function parseContext() {
       timeoutMs > MAX_TIMEOUT_MS) {
     throw new Error("renderer database timeout is invalid");
   }
+  const cacheApi = oneQueryValue(query, "cacheApi");
+  if (cacheApi !== "0" && cacheApi !== "1") {
+    throw new Error("renderer database cache API mode is invalid");
+  }
   return Object.freeze({
     artifact: parseArtifact(oneQueryValue(query, "artifact")),
+    cacheApiPersistence: cacheApi === "1",
     captureHarness: parseCaptureHarness(oneQueryValue(query, "captureHarness")),
     resultToken: oneQueryValue(query, "resultToken"),
     session: oneQueryValue(query, "session"),
@@ -243,10 +248,15 @@ async function fetchVerified(url, identity, contentType, description) {
 }
 
 function expectedMarkers(payload) {
+  const cacheMarkers = payload.cacheApiPersistence === true;
   if (payload.ordinal === 1) {
     return [
       MARKER_PREFIX + "READY",
       MARKER_PREFIX + "RENDERER_WRITE_OK sha256=" + payload.tokenADigest,
+      ...(cacheMarkers ? [
+        MARKER_PREFIX + "CACHE_API_WRITE_READBACK_OK sha256=" + payload.tokenADigest,
+        MARKER_PREFIX + "CACHE_API_BACKEND_CLOSED_AND_INDEX_REPLACED sha256=" + payload.tokenADigest,
+      ] : []),
       MARKER_PREFIX + "BACKING_STORES_CLOSED sha256=" + payload.tokenADigest,
       MARKER_PREFIX + "FENCE_OK sha256=" + payload.tokenADigest,
       MARKER_PREFIX + "LEASE_RELEASED",
@@ -257,6 +267,11 @@ function expectedMarkers(payload) {
       MARKER_PREFIX + "READY",
       MARKER_PREFIX + "RENDERER_REOPEN_READ_A_OK sha256=" + payload.tokenADigest,
       MARKER_PREFIX + "RENDERER_WRITE_B_OK sha256=" + payload.tokenBDigest,
+      ...(cacheMarkers ? [
+        MARKER_PREFIX + "CACHE_API_REOPEN_READ_A_OK sha256=" + payload.tokenADigest,
+        MARKER_PREFIX + "CACHE_API_WRITE_B_OK sha256=" + payload.tokenBDigest,
+        MARKER_PREFIX + "CACHE_API_BACKEND_CLOSED_AND_INDEX_REPLACED sha256=" + payload.tokenBDigest,
+      ] : []),
       MARKER_PREFIX + "BACKING_STORES_CLOSED sha256=" + payload.tokenBDigest,
       MARKER_PREFIX + "FENCE_OK sha256=" + payload.tokenBDigest,
       MARKER_PREFIX + "LEASE_RELEASED",
@@ -266,6 +281,10 @@ function expectedMarkers(payload) {
     return [
       MARKER_PREFIX + "READY",
       MARKER_PREFIX + "RENDERER_REOPEN_READ_B_OK sha256=" + payload.tokenBDigest,
+      ...(cacheMarkers ? [
+        MARKER_PREFIX + "CACHE_API_REOPEN_READ_B_OK sha256=" + payload.tokenBDigest,
+        MARKER_PREFIX + "CACHE_API_BACKEND_CLOSED_AND_INDEX_REPLACED sha256=" + payload.tokenBDigest,
+      ] : []),
       MARKER_PREFIX + "BACKING_STORES_CLOSED sha256=" + payload.tokenBDigest,
       MARKER_PREFIX + "FENCE_OK sha256=" + payload.tokenBDigest,
       MARKER_PREFIX + "LEASE_RELEASED",
@@ -565,11 +584,13 @@ class RendererDatabaseOuterReloadHost {
       throw new Error("bootstrap response is invalid");
     }
     const payload = exactFields(await response.json(), [
-      "case", "mode", "ordinal", "phase", "protocol", "scope", "tokenA",
-      "tokenADigest", "tokenB", "tokenBDigest",
+      "cacheApiPersistence", "case", "mode", "ordinal", "phase",
+      "protocol", "scope", "tokenA", "tokenADigest", "tokenB",
+      "tokenBDigest",
     ], "bootstrap payload");
     const expected = PHASES[payload.ordinal];
-    if (!expected || payload.protocol !== HOST_PROTOCOL || payload.case !== CASE ||
+    if (!expected || payload.cacheApiPersistence !== this.context.cacheApiPersistence ||
+        payload.protocol !== HOST_PROTOCOL || payload.case !== CASE ||
         payload.scope !== SCOPE || payload.phase !== expected.phase ||
         payload.mode !== expected.mode ||
         ![payload.tokenA, payload.tokenB].every((token) =>
@@ -645,6 +666,9 @@ class RendererDatabaseOuterReloadHost {
 
   moduleArguments() {
     const args = ["--wasm-profile-indexed-db-smoke=" + this.payload.mode];
+    if (this.context.cacheApiPersistence) {
+      args.push("--wasm-profile-indexed-db-cache-api=persistence");
+    }
     if (this.payload.tokenA !== null) {
       args.push("--wasm-profile-indexed-db-token-a=" + this.payload.tokenA);
     }
@@ -745,6 +769,7 @@ class RendererDatabaseOuterReloadHost {
         processExitDispatches: this.processExitDispatches,
         protocol: HOST_PROTOCOL,
       },
+      cacheApiPersistence: this.payload.cacheApiPersistence,
       captureHarness: this.context.captureHarness,
       case: CASE,
       document: this.documentEvidence,
@@ -898,7 +923,8 @@ class RendererDatabaseOuterReloadHost {
 export function validateChromeWasmRendererIndexedDBOuterReloadDocumentResult(result) {
   exactFields(result, RESULT_FIELDS, "renderer database result");
   const phase = PHASES[result.ordinal];
-  if (!phase || result.protocol !== HOST_PROTOCOL || result.case !== CASE ||
+  if (!phase || typeof result.cacheApiPersistence !== "boolean" ||
+      result.protocol !== HOST_PROTOCOL || result.case !== CASE ||
       result.scope !== SCOPE || result.status !== "pass" ||
       result.m7GateComplete !== false || result.mode !== phase.mode ||
       result.phase !== phase.phase || result.sharedArrayBuffer !== true ||
@@ -917,6 +943,7 @@ export function validateChromeWasmRendererIndexedDBOuterReloadDocumentResult(res
     throw new Error("renderer database token evidence is invalid");
   }
   const markers = expectedMarkers({
+    cacheApiPersistence: result.cacheApiPersistence,
     ordinal: result.ordinal,
     tokenADigest: evidence.tokenADigest,
     tokenBDigest: evidence.tokenBDigest,

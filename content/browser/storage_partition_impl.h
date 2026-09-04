@@ -214,6 +214,8 @@ class CONTENT_EXPORT StoragePartitionImpl
   // only for the Wasm persistent-default-partition shutdown probe.
   bool ShutdownIndexedDBForWasmTest(base::OnceClosure completion);
 
+#endif
+#if defined(CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST)
   // Starts one receipt for an already-live Cache API cache selected by its
   // default StorageKey. The completion result does not imply CacheStorage-wide
   // shutdown, fsync, or aggregate profile durability.

@@ -306,6 +306,33 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.indexed_db_ui = source(
             "chrome/browser/wasm/wasm_profile_renderer_indexed_db_ui.cc"
         )
+        self.renderer_indexed_db_runner = source(
+            "tools/wasm/run_m7_chrome_renderer_indexed_db_outer_reload_dom_smoke.py"
+        )
+        self.renderer_indexed_db_host = source(
+            "tools/wasm/host/chrome_wasm_renderer_indexed_db_outer_reload_smoke.js"
+        )
+        self.cache_storage_cache = source(
+            "content/browser/cache_storage/cache_storage_cache.h"
+        )
+        self.cache_storage_cache_source = source(
+            "content/browser/cache_storage/cache_storage_cache.cc"
+        )
+        self.cache_storage_manager = source(
+            "content/browser/cache_storage/cache_storage_manager.cc"
+        )
+        self.cache_storage_manager_header = source(
+            "content/browser/cache_storage/cache_storage_manager.h"
+        )
+        self.cache_storage_context = source(
+            "content/browser/cache_storage/cache_storage_context_impl.cc"
+        )
+        self.cache_storage_control_wrapper = source(
+            "content/browser/cache_storage/cache_storage_control_wrapper.cc"
+        )
+        self.cache_storage_control_wrapper_header = source(
+            "content/browser/cache_storage/cache_storage_control_wrapper.h"
+        )
         self.indexed_db_context = source(
             "content/browser/indexed_db/indexed_db_context_impl.cc"
         )
@@ -360,6 +387,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.content_public_browser_build = source(
             "content/public/browser/BUILD.gn"
         )
+        self.content_test_build = source("content/test/BUILD.gn")
         self.shutdown_notification_public_header = source(
             "content/public/browser/"
             "wasm_storage_partition_shutdown_test_support.h"
@@ -1802,6 +1830,34 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
                 self.content_browser_client,
                 "kCacheAPIWriteReadbackSuffix",
             ),
+            (self.indexed_db_smoke, 'kCacheAPISwitch[] = "wasm-profile-indexed-db-cache-api"'),
+            (self.indexed_db_smoke, 'kRendererCacheAPIPersistenceName[] ='),
+            (self.indexed_db_smoke, 'input_.require_cache_api_persistence = has_cache_api;'),
+            (self.indexed_db_smoke, '"&cache-api=persistence"'),
+            (self.indexed_db_smoke, 'CACHE_API_REOPEN_READ_A_OK'),
+            (self.indexed_db_smoke, 'CACHE_API_WRITE_B_OK'),
+            (self.indexed_db_smoke, 'CACHE_API_REOPEN_READ_B_OK'),
+            (self.indexed_db_ui, 'cacheApiPersistenceName = "m7-renderer-cache-api-persistence-v1"'),
+            (self.indexed_db_ui, '"m7-indexed-db-renderer-write-cache-api-persistence-ok"'),
+            (self.indexed_db_ui, '"m7-indexed-db-renderer-verify-a-write-b-cache-api-persistence-ok"'),
+            (self.indexed_db_ui, '"m7-indexed-db-renderer-verify-b-cache-api-persistence-ok"'),
+            (self.renderer_indexed_db_runner, '"--cache-api-persistence"'),
+            (self.renderer_indexed_db_runner, '"cacheApiPersistence": self.cache_api_persistence'),
+            (self.renderer_indexed_db_host, '"cacheApiPersistence"'),
+            (self.renderer_indexed_db_host, 'CACHE_API_BACKEND_CLOSED_AND_INDEX_REPLACED'),
+            (self.renderer_indexed_db_host, 'cacheApiPersistence: cacheApi === "1"'),
+            (self.cache_storage_cache, "CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST"),
+            (self.cache_storage_cache_source, "CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST"),
+            (self.cache_storage_manager, "CloseLiveDefaultCacheAndWriteIndexForWasmTest"),
+            (self.cache_storage_manager_header, "CloseLiveDefaultCacheAndWriteIndexForWasmTest"),
+            (self.cache_storage_context, "CloseLiveDefaultCacheAndWriteIndexForWasmTest"),
+            (self.cache_storage_control_wrapper, "CloseLiveDefaultCacheAndWriteIndexForWasmTest"),
+            (self.cache_storage_control_wrapper_header, "CloseLiveDefaultCacheAndWriteIndexForWasmTest"),
+            # The CacheStorage receipt implementation define is deliberately
+            # private to content/browser; the public config only carries the
+            # profile-indexed-db class-layout define.
+            (self.content_browser_build, "CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST=1"),
+            (self.content_test_build, "CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST=1"),
         ):
             with self.subTest(cache_api_token=token):
                 self.assertIn(token, text)

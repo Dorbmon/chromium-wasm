@@ -158,6 +158,8 @@ bool IsWasmM7RendererIndexedDBURL(const GURL& url) {
         "mode=renderer-write&token-a=";
     constexpr std::string_view kCacheAPIWriteReadbackSuffix =
         "&cache-api=write-readback";
+    constexpr std::string_view kCacheAPIPersistenceSuffix =
+        "&cache-api=persistence";
     constexpr std::string_view kVerifyAWriteBPrefix =
         "mode=renderer-verify-a-write-b&token-a=";
     constexpr std::string_view kVerifyAWriteBSeparator = "&token-b=";
@@ -168,12 +170,17 @@ bool IsWasmM7RendererIndexedDBURL(const GURL& url) {
       if (token.ends_with(kCacheAPIWriteReadbackSuffix)) {
         token = token.substr(
             0, token.size() - kCacheAPIWriteReadbackSuffix.size());
+      } else if (token.ends_with(kCacheAPIPersistenceSuffix)) {
+        token = token.substr(0, token.size() - kCacheAPIPersistenceSuffix.size());
       }
       return IsWasmM7RendererIndexedDBToken(token);
     }
     if (query.starts_with(kVerifyBPrefix)) {
-      return IsWasmM7RendererIndexedDBToken(
-          query.substr(kVerifyBPrefix.size()));
+      std::string_view token = query.substr(kVerifyBPrefix.size());
+      if (token.ends_with(kCacheAPIPersistenceSuffix)) {
+        token = token.substr(0, token.size() - kCacheAPIPersistenceSuffix.size());
+      }
+      return IsWasmM7RendererIndexedDBToken(token);
     }
     if (!query.starts_with(kVerifyAWriteBPrefix)) {
       return false;
@@ -186,8 +193,11 @@ bool IsWasmM7RendererIndexedDBURL(const GURL& url) {
       return false;
     }
     const std::string_view token_a = tokens.substr(0, separator);
-    const std::string_view token_b =
+    std::string_view token_b =
         tokens.substr(separator + kVerifyAWriteBSeparator.size());
+    if (token_b.ends_with(kCacheAPIPersistenceSuffix)) {
+      token_b = token_b.substr(0, token_b.size() - kCacheAPIPersistenceSuffix.size());
+    }
     return IsWasmM7RendererIndexedDBToken(token_a) &&
            IsWasmM7RendererIndexedDBToken(token_b) && token_a != token_b;
   }

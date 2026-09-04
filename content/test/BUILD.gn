@@ -110,6 +110,7 @@ if (is_wasm) {
     config("wasm_m7_cache_storage_close_receipt") {
       defines = [
         "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1",
+        "CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST=1",
       ]
     }
 

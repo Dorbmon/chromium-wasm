@@ -69,7 +69,7 @@ class CONTENT_EXPORT CacheStorageContextImpl
             mojo::PendingRemote<storage::mojom::BlobStorageContext>
                 blob_storage_context);
 
-#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+#if defined(CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST)
   // Forwards the selected probe's no-create live Cache API receipt on this
   // context's scheduler sequence.
   void CloseLiveDefaultCacheAndWriteIndexForWasmTest(

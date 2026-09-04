@@ -45,7 +45,10 @@ CONTENT_EXPORT void CancelWasmStoragePartitionShutdownNotificationForTest();
 CONTENT_EXPORT bool ShutdownWasmStoragePartitionIndexedDBForTest(
     StoragePartition* partition,
     base::OnceClosure on_closed);
+#endif
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
 // Starts a result-bearing receipt for one already-live disk-backed Cache API
 // cache in |partition|'s default bucket matching |storage_key|. |on_result|
 // runs on the caller's UI sequence after the named cache backend close and

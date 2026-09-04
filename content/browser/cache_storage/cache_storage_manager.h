@@ -82,7 +82,7 @@ class CONTENT_EXPORT CacheStorageManager
       const storage::BucketLocator& bucket_locator,
       storage::mojom::CacheStorageOwner owner);
 
-#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+#if defined(CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST)
   // Closes a named cache only when exactly one already-live, disk-backed
   // Cache API entry exists for |storage_key|'s default bucket. This neither
   // creates a CacheStorage nor resolves a bucket through QuotaManager.

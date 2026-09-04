@@ -965,7 +965,7 @@ void CacheStorageCache::Close(base::OnceClosure callback) {
           scheduler_->WrapCallbackToRunNext(id, std::move(callback))));
 }
 
-#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+#if defined(CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST)
 void CacheStorageCache::CloseAndReportResultForWasmTest(
     base::OnceCallback<void(bool)> callback) {
   // Do not initialize a backend just to manufacture a close receipt.
@@ -2442,7 +2442,7 @@ void CacheStorageCache::CloseImpl(base::OnceClosure callback) {
   post_backend_closed_callback_ = std::move(callback);
 }
 
-#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+#if defined(CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST)
 void CacheStorageCache::CloseAndReportResultForWasmTestImpl(
     base::OnceCallback<void(bool)> callback) {
   DCHECK(scheduler_->IsRunningExclusiveOperation());

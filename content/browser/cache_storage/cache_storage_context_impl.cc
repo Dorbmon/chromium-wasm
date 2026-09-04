@@ -101,7 +101,7 @@ void CacheStorageContextImpl::Init(
       std::move(background_fetch_client_remote));
 }
 
-#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+#if defined(CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST)
 void CacheStorageContextImpl::CloseLiveDefaultCacheAndWriteIndexForWasmTest(
     const blink::StorageKey& storage_key,
     const std::u16string& cache_name,

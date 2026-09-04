@@ -431,7 +431,7 @@ CacheStorageHandle CacheStorageManager::OpenCacheStorage(
   return it->second->CreateHandle();
 }
 
-#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+#if defined(CHROME_WASM_M7_CACHE_STORAGE_CLOSE_RECEIPT_TEST)
 void CacheStorageManager::CloseLiveDefaultCacheAndWriteIndexForWasmTest(
     const blink::StorageKey& storage_key,
     const std::u16string& cache_name,

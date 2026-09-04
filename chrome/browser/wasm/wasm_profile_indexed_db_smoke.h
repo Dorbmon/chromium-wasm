@@ -48,6 +48,13 @@ struct WasmProfileIndexedDBSmokeInput {
   // The browser observes only the fixed renderer acknowledgement; this is not
   // a Cache Storage close, flush, durability, or aggregate-partition receipt.
   bool require_cache_api_write_readback = false;
+
+  // The standalone renderer reload witness asks each fresh renderer module to
+  // use one fixed Cache API entry: write A, reopen/read A and write B, then
+  // reopen/read B. The participant also receives a selected live-cache
+  // close/index-replacement receipt for each module. This remains narrower
+  // than CacheStorage-wide quiescence, durable flush, or crash recovery.
+  bool require_cache_api_persistence = false;
 };
 
 // Owns the one source-selected persistent IndexedDB renderer witness. The
@@ -126,6 +133,9 @@ class WasmProfileIndexedDBLifetimeParticipant {
 //   --wasm-profile-indexed-db-smoke=renderer-verify-b
 //   --wasm-profile-indexed-db-token-b=<64 lowercase hex>
 //
+// Append --wasm-profile-indexed-db-cache-api=persistence to any phase to add
+// the selected Cache API persistence witness described below.
+//
 // The renderer-owned chrome://m7-indexed-db page uses globalThis.indexedDB to
 // commit A, reopen/read A and commit B, then reopen/read B plus a fixed
 // non-no-op close-fence record. The browser validates the committed frame's
@@ -139,6 +149,14 @@ class WasmProfileIndexedDBLifetimeParticipant {
 //   CHROMIUM_WASM_M7_INDEXED_DB:RENDERER_REOPEN_READ_A_OK sha256=<digest>
 //   CHROMIUM_WASM_M7_INDEXED_DB:RENDERER_WRITE_B_OK sha256=<digest>
 //   CHROMIUM_WASM_M7_INDEXED_DB:RENDERER_REOPEN_READ_B_OK sha256=<digest>
+//
+// With --wasm-profile-indexed-db-cache-api=persistence, the selected Cache
+// API operation adds these phase-specific markers before BACKING_STORES_CLOSED:
+//   CHROMIUM_WASM_M7_INDEXED_DB:CACHE_API_WRITE_READBACK_OK sha256=<digest>
+//   CHROMIUM_WASM_M7_INDEXED_DB:CACHE_API_REOPEN_READ_A_OK sha256=<digest>
+//   CHROMIUM_WASM_M7_INDEXED_DB:CACHE_API_WRITE_B_OK sha256=<digest>
+//   CHROMIUM_WASM_M7_INDEXED_DB:CACHE_API_REOPEN_READ_B_OK sha256=<digest>
+//   CHROMIUM_WASM_M7_INDEXED_DB:CACHE_API_BACKEND_CLOSED_AND_INDEX_REPLACED sha256=<digest>
 //   CHROMIUM_WASM_M7_INDEXED_DB:BACKING_STORES_CLOSED sha256=<digest>
 //   CHROMIUM_WASM_M7_INDEXED_DB:FENCE_OK sha256=<digest>
 //   CHROMIUM_WASM_M7_INDEXED_DB:LEASE_RELEASED

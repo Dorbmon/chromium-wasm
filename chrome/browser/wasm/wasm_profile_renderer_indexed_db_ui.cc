@@ -59,6 +59,8 @@ bool IsWasmProfileRendererIndexedDBRootURL(const GURL& url) {
       "mode=renderer-write&token-a=";
   constexpr std::string_view kCacheAPIWriteReadbackSuffix =
       "&cache-api=write-readback";
+  constexpr std::string_view kCacheAPIPersistenceSuffix =
+      "&cache-api=persistence";
   constexpr std::string_view kVerifyAWriteBPrefix =
       "mode=renderer-verify-a-write-b&token-a=";
   constexpr std::string_view kVerifyAWriteBSeparator = "&token-b=";
@@ -70,12 +72,17 @@ bool IsWasmProfileRendererIndexedDBRootURL(const GURL& url) {
     if (token.ends_with(kCacheAPIWriteReadbackSuffix)) {
       token = token.substr(
           0, token.size() - kCacheAPIWriteReadbackSuffix.size());
+    } else if (token.ends_with(kCacheAPIPersistenceSuffix)) {
+      token = token.substr(0, token.size() - kCacheAPIPersistenceSuffix.size());
     }
     return IsWasmProfileRendererIndexedDBToken(token);
   }
   if (query.starts_with(kVerifyBPrefix)) {
-    return IsWasmProfileRendererIndexedDBToken(
-        query.substr(kVerifyBPrefix.size()));
+    std::string_view token = query.substr(kVerifyBPrefix.size());
+    if (token.ends_with(kCacheAPIPersistenceSuffix)) {
+      token = token.substr(0, token.size() - kCacheAPIPersistenceSuffix.size());
+    }
+    return IsWasmProfileRendererIndexedDBToken(token);
   }
   if (!query.starts_with(kVerifyAWriteBPrefix)) {
     return false;
@@ -87,8 +94,11 @@ bool IsWasmProfileRendererIndexedDBRootURL(const GURL& url) {
     return false;
   }
   const std::string_view token_a = tokens.substr(0, separator);
-  const std::string_view token_b =
+  std::string_view token_b =
       tokens.substr(separator + kVerifyAWriteBSeparator.size());
+  if (token_b.ends_with(kCacheAPIPersistenceSuffix)) {
+    token_b = token_b.substr(0, token_b.size() - kCacheAPIPersistenceSuffix.size());
+  }
   return IsWasmProfileRendererIndexedDBToken(token_a) &&
          IsWasmProfileRendererIndexedDBToken(token_b) && token_a != token_b;
 }
@@ -123,12 +133,17 @@ constexpr char kRendererIndexedDBScript[] = R"JS((() => {
   const tokenB = parameters.get("token-b");
   const requireCacheApiWriteReadback =
       parameters.get("cache-api") === "write-readback";
+  const requireCacheApiPersistence =
+      parameters.get("cache-api") === "persistence";
   const tokenPattern = /^[0-9a-f]{64}$/;
   const databaseName = "m7-renderer-indexed-db-v1";
   const storeName = "m7-renderer-indexed-db-store-v1";
   const tokenKey = "m7-renderer-indexed-db-token-v1";
   const fenceKey = "m7-renderer-indexed-db-close-fence-v1";
   const fenceValue = "m7-renderer-indexed-db-close-fence-value-v1";
+  const cacheApiPersistenceName = "m7-renderer-cache-api-persistence-v1";
+  const cacheApiPersistenceRequest = new Request(
+      "https://m7-cache-api-persistence.test/value", {method: "GET"});
   // Never surface an exception value or a token. The fixed category is enough
   // to distinguish a renderer storage failure from a navigation failure in
   // this source-selected test artifact.
@@ -274,9 +289,101 @@ constexpr char kRendererIndexedDBScript[] = R"JS((() => {
     }
   };
 
+  const readAndMaybeWriteCacheApiPersistence = async (readToken, writeToken) => {
+    let cache;
+    try {
+      cache = await globalThis.caches.open(cacheApiPersistenceName);
+    } catch (_error) {
+      throw "cache-api-open-error";
+    }
+    // Keep the browser-side CacheStorageCacheHandle live until the native
+    // selected-cache close/index replacement receipt is delivered.
+    globalThis.__m7RendererCacheApiPersistenceCache = cache;
+    let response;
+    try {
+      response = await cache.match(cacheApiPersistenceRequest);
+    } catch (_error) {
+      throw "cache-api-match-error";
+    }
+    if (!response) {
+      throw "cache-api-readback-mismatch";
+    }
+    try {
+      if (await response.text() !== readToken) {
+        throw "cache-api-readback-mismatch";
+      }
+    } catch (category) {
+      throw category === "cache-api-readback-mismatch" ? category :
+          "cache-api-match-exception";
+    }
+    if (writeToken === null) {
+      return;
+    }
+    try {
+      await cache.put(cacheApiPersistenceRequest, new Response(writeToken));
+    } catch (_error) {
+      throw "cache-api-put-error";
+    }
+    let writeResponse;
+    try {
+      writeResponse = await cache.match(cacheApiPersistenceRequest);
+    } catch (_error) {
+      throw "cache-api-match-error";
+    }
+    if (!writeResponse) {
+      throw "cache-api-readback-mismatch";
+    }
+    try {
+      if (await writeResponse.text() !== writeToken) {
+        throw "cache-api-readback-mismatch";
+      }
+    } catch (category) {
+      throw category === "cache-api-readback-mismatch" ? category :
+          "cache-api-match-exception";
+    }
+  };
+
+  const cachePutAndReadCacheApiPersistence = async (token) => {
+    let cache;
+    try {
+      cache = await globalThis.caches.open(cacheApiPersistenceName);
+    } catch (_error) {
+      throw "cache-api-open-error";
+    }
+    globalThis.__m7RendererCacheApiPersistenceCache = cache;
+    try {
+      await cache.put(cacheApiPersistenceRequest, new Response(token));
+    } catch (_error) {
+      throw "cache-api-put-error";
+    }
+    let response;
+    try {
+      response = await cache.match(cacheApiPersistenceRequest);
+    } catch (_error) {
+      throw "cache-api-match-error";
+    }
+    if (!response) {
+      throw "cache-api-readback-mismatch";
+    }
+    try {
+      if (await response.text() !== token) {
+        throw "cache-api-readback-mismatch";
+      }
+    } catch (category) {
+      throw category === "cache-api-readback-mismatch" ? category :
+          "cache-api-match-exception";
+    }
+  };
+
   const complete = async () => {
+    const cacheApi = parameters.get("cache-api");
+    if (cacheApi !== null && cacheApi !== "write-readback" &&
+        cacheApi !== "persistence") {
+      fail("arguments");
+      return;
+    }
     if (mode === "renderer-write" &&
-        hasExactParameters(requireCacheApiWriteReadback ?
+        hasExactParameters(requireCacheApiWriteReadback || requireCacheApiPersistence ?
             ["mode", "token-a", "cache-api"] : ["mode", "token-a"]) &&
         tokenPattern.test(tokenA || "") && tokenB === null) {
       const database = await openDatabase();
@@ -284,18 +391,24 @@ constexpr char kRendererIndexedDBScript[] = R"JS((() => {
         await writeToken(database, tokenA);
         if (requireCacheApiWriteReadback) {
           await writeAndReadCacheApiToken(tokenA);
+        } else if (requireCacheApiPersistence) {
+          await cachePutAndReadCacheApiPersistence(tokenA);
         }
       } finally {
         database.close();
       }
       document.title = requireCacheApiWriteReadback ?
           "m7-indexed-db-renderer-write-cache-api-write-readback-ok" :
-          "m7-indexed-db-renderer-write-ok";
+          (requireCacheApiPersistence ?
+              "m7-indexed-db-renderer-write-cache-api-persistence-ok" :
+              "m7-indexed-db-renderer-write-ok");
       return;
     }
 
     if (mode === "renderer-verify-a-write-b" &&
-        hasExactParameters(["mode", "token-a", "token-b"]) &&
+        hasExactParameters(requireCacheApiPersistence ?
+            ["mode", "token-a", "token-b", "cache-api"] :
+            ["mode", "token-a", "token-b"]) &&
         tokenPattern.test(tokenA || "") && tokenPattern.test(tokenB || "") &&
         tokenA !== tokenB) {
       const database = await openDatabase();
@@ -308,12 +421,18 @@ constexpr char kRendererIndexedDBScript[] = R"JS((() => {
       } finally {
         database.close();
       }
-      document.title = "m7-indexed-db-renderer-verify-a-write-b-ok";
+      if (requireCacheApiPersistence) {
+        await readAndMaybeWriteCacheApiPersistence(tokenA, tokenB);
+      }
+      document.title = requireCacheApiPersistence ?
+          "m7-indexed-db-renderer-verify-a-write-b-cache-api-persistence-ok" :
+          "m7-indexed-db-renderer-verify-a-write-b-ok";
       return;
     }
 
     if (mode === "renderer-verify-b" &&
-        hasExactParameters(["mode", "token-b"]) &&
+        hasExactParameters(requireCacheApiPersistence ?
+            ["mode", "token-b", "cache-api"] : ["mode", "token-b"]) &&
         tokenA === null && tokenPattern.test(tokenB || "")) {
       const database = await openDatabase();
       try {
@@ -325,7 +444,12 @@ constexpr char kRendererIndexedDBScript[] = R"JS((() => {
       } finally {
         database.close();
       }
-      document.title = "m7-indexed-db-renderer-verify-b-ok";
+      if (requireCacheApiPersistence) {
+        await readAndMaybeWriteCacheApiPersistence(tokenB, null);
+      }
+      document.title = requireCacheApiPersistence ?
+          "m7-indexed-db-renderer-verify-b-cache-api-persistence-ok" :
+          "m7-indexed-db-renderer-verify-b-ok";
       return;
     }
 
